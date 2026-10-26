@@ -1,5 +1,9 @@
 # ServerDeck
 
+[**serverdeck.black.ax**](https://serverdeck.black.ax) ·
+[Releases](https://github.com/onjoakimsmind/serverdeck/releases) ·
+[Issues](https://github.com/onjoakimsmind/serverdeck/issues)
+
 ServerDeck is a self-hosted control panel for a single Linux host. It combines
 the day-to-day host controls usually spread across shell sessions into one
 audited interface: Incus containers and VMs, Docker, systemd services, ZFS and
@@ -65,7 +69,9 @@ are not part of this release.
 
 The bootstrap installer resolves the latest stable GitHub release, downloads
 the Linux x86_64 archive and its published SHA-256 checksum, verifies the
-archive, and then runs the release installer with `sudo`:
+archive, and then runs the release installer with `sudo`. It's served from
+[serverdeck.black.ax](https://serverdeck.black.ax), the project's landing site
+(source in [`site/`](site)):
 
 ```sh
 curl -fsSL https://serverdeck.black.ax/install.sh | sh
@@ -233,3 +239,9 @@ stdin. Console output and keystrokes are never written to the audit log.
 ServerDeck's own source is MIT-licensed. Bundled third-party components retain
 their respective licenses; see
 [`packaging/THIRD-PARTY-NOTICES.md`](packaging/THIRD-PARTY-NOTICES.md).
+
+## Links
+
+- Website and installer: <https://serverdeck.black.ax>
+- Releases: <https://github.com/onjoakimsmind/serverdeck/releases>
+- Issues: <https://github.com/onjoakimsmind/serverdeck/issues>
