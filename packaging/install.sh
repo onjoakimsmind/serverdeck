@@ -27,6 +27,7 @@ OPT_DATA_DIR=""
 OPT_PORT=""
 OPT_BIND=""
 OPT_URL=""
+OPT_WORKLOADS=""
 RELEASE_PATH=""
 RELEASE_URL=""
 RELEASE_SHA256="${SERVERDECK_RELEASE_SHA256:-}"
@@ -36,6 +37,19 @@ UNINSTALL=0
 PURGE=0
 ASSUME_YES=0
 SHOW_HELP=0
+NO_PACKAGES=0
+REMOVE_WORKLOADS=0
+WORKLOADS=""
+PKG_MANAGER=""
+PKG_MANIFEST=""
+PKG_LOG=""
+PKG_REFRESHED=0
+PKG_INSTALLED_THIS_RUN=""
+PKG_INSTALLED_WORKLOADS=""
+PKG_SNAPSHOT=""
+RECORDED_PACKAGES=""
+RECORDED_WORKLOADS=""
+RECORDED_MANAGER=""
 
 WORK_DIR=""
 SOURCE_ROOT=""
@@ -110,8 +124,13 @@ Options:
   --release PATH       Install a local release tarball or extracted directory
   --release-url URL    Download a release tarball
   --sha256 HASH        Required SHA-256 checksum for --release-url
+  --workloads LIST     Opt-in workloads: incus,docker,zfs or all (comma separated)
+  --no-packages        Do not install smartmontools, pciutils or workload packages
   --uninstall          Remove ServerDeck; keep configuration and data
-  --purge              With --uninstall, also delete configuration and data
+  --purge              With --uninstall, also delete configuration, data and
+                       opt-in workload packages installed by ServerDeck
+  --remove-workloads   With --uninstall, remove opt-in workload packages that
+                       ServerDeck installed
   --yes                Do not ask for confirmation during --purge
   -h, --help           Show this help
 
@@ -171,6 +190,19 @@ while [ "$#" -gt 0 ]; do
 			RELEASE_SHA256=$2
 			shift 2
 			;;
+		--workloads)
+			[ "$#" -ge 2 ] || fail "--workloads requires a value"
+			OPT_WORKLOADS=$2
+			shift 2
+			;;
+		--no-packages)
+			NO_PACKAGES=1
+			shift
+			;;
+		--remove-workloads)
+			REMOVE_WORKLOADS=1
+			shift
+			;;
 		--no-start)
 			NO_START=1
 			shift
@@ -207,6 +239,14 @@ if [ "$SHOW_HELP" -eq 1 ]; then
 	exit 0
 fi
 
+if [ "$NO_PACKAGES" -eq 1 ] && [ -n "$OPT_WORKLOADS" ]; then
+	fail "--workloads cannot be combined with --no-packages."
+fi
+
+if [ "$REMOVE_WORKLOADS" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+	fail "--remove-workloads requires --uninstall."
+fi
+
 [ "$(id -u)" -eq 0 ] || fail "Run this installer as root (for example: sudo ./install.sh)."
 
 if [ -r "$CONF_FILE" ]; then
@@ -230,6 +270,42 @@ apply_overrides() {
 }
 
 apply_overrides
+
+PKG_MANIFEST="$CONF_DIR/workload-packages.conf"
+
+add_workload() {
+	case " $WORKLOADS " in
+		*" $1 "*) ;;
+		*) WORKLOADS="${WORKLOADS:+$WORKLOADS }$1" ;;
+	esac
+}
+
+normalize_workloads() {
+	[ -n "$OPT_WORKLOADS" ] || return 0
+
+	old_ifs=$IFS
+	IFS=', '
+	for item in $OPT_WORKLOADS; do
+		[ -n "$item" ] || continue
+		case "$item" in
+			all)
+				add_workload incus
+				add_workload docker
+				add_workload zfs
+				;;
+			incus|docker|zfs)
+				add_workload "$item"
+				;;
+			*)
+				IFS=$old_ifs
+				fail "Unknown workload '$item'. Choose incus, docker, zfs or all."
+				;;
+		esac
+	done
+	IFS=$old_ifs
+}
+
+normalize_workloads
 
 is_managed_path() {
 	case "$1" in
@@ -347,6 +423,354 @@ check_platform() {
 		say "  ${DIM}${distro}${RESET} / $arch / $glibc_version"
 	fi
 	success "Platform checks passed"
+}
+
+detect_package_manager() {
+	if command -v apt-get >/dev/null 2>&1; then
+		PKG_MANAGER=apt
+	elif command -v dnf >/dev/null 2>&1; then
+		PKG_MANAGER=dnf
+	elif command -v pacman >/dev/null 2>&1; then
+		PKG_MANAGER=pacman
+	else
+		PKG_MANAGER=""
+	fi
+}
+
+package_candidates() {
+	case "$PKG_MANAGER:$1" in
+		apt:smartmontools) printf '%s\n' smartmontools ;;
+		apt:pciutils) printf '%s\n' pciutils ;;
+		apt:incus) printf '%s\n' incus ;;
+		apt:docker) printf '%s\n' docker.io docker-ce ;;
+		apt:zfs) printf '%s\n' zfsutils-linux ;;
+		dnf:smartmontools) printf '%s\n' smartmontools ;;
+		dnf:pciutils) printf '%s\n' pciutils ;;
+		dnf:incus) printf '%s\n' incus ;;
+		dnf:docker) printf '%s\n' moby-engine docker-ce docker ;;
+		dnf:zfs) printf '%s\n' zfs ;;
+		pacman:smartmontools) printf '%s\n' smartmontools ;;
+		pacman:pciutils) printf '%s\n' pciutils ;;
+		pacman:incus) printf '%s\n' incus ;;
+		pacman:docker) printf '%s\n' docker ;;
+		pacman:zfs) printf '%s\n' zfs-utils ;;
+		*) return 1 ;;
+	esac
+}
+
+package_installed() {
+	case "$PKG_MANAGER" in
+		apt) dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q '^install ok installed$' ;;
+		dnf) rpm -q "$1" >/dev/null 2>&1 ;;
+		pacman) pacman -Q "$1" >/dev/null 2>&1 ;;
+		*) return 1 ;;
+	esac
+}
+
+list_installed_packages() {
+	case "$PKG_MANAGER" in
+		apt) dpkg-query -W -f='${Package}\t${Status}\n' 2>/dev/null | awk -F '\t' '$2 == "install ok installed" { print $1 }' ;;
+		dnf) rpm -qa --qf '%{NAME}\n' 2>/dev/null ;;
+		pacman) pacman -Qq 2>/dev/null ;;
+		*) return 1 ;;
+	esac | LC_ALL=C sort -u
+}
+
+begin_workload_snapshot() {
+	PKG_SNAPSHOT=$(mktemp "$WORK_DIR/pkg-before.XXXXXX" 2>/dev/null) || PKG_SNAPSHOT=""
+	if [ -n "$PKG_SNAPSHOT" ] && ! list_installed_packages >"$PKG_SNAPSHOT"; then
+		rm -f "$PKG_SNAPSHOT"
+		PKG_SNAPSHOT=""
+	fi
+}
+
+record_workload_snapshot() {
+	[ -n "$PKG_SNAPSHOT" ] || return 0
+
+	after=$(mktemp "$WORK_DIR/pkg-after.XXXXXX" 2>/dev/null) || return 0
+	if list_installed_packages >"$after"; then
+		for package in $(LC_ALL=C comm -13 "$PKG_SNAPSHOT" "$after"); do
+			case " $PKG_INSTALLED_WORKLOADS " in
+				*" $package "*) ;;
+				*) PKG_INSTALLED_WORKLOADS="${PKG_INSTALLED_WORKLOADS:+$PKG_INSTALLED_WORKLOADS }$package" ;;
+			esac
+		done
+	fi
+	rm -f "$after"
+}
+
+finish_workload_snapshot() {
+	[ -z "$PKG_SNAPSHOT" ] || rm -f "$PKG_SNAPSHOT"
+	PKG_SNAPSHOT=""
+}
+
+resolve_installed_package() {
+	for candidate in $(package_candidates "$1"); do
+		if package_installed "$candidate"; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+refresh_package_lists() {
+	case "$PKG_MANAGER" in
+		apt) DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 update ;;
+		dnf) dnf -q makecache --refresh ;;
+		pacman)
+			if ! ls /var/lib/pacman/sync/*.db >/dev/null 2>&1; then
+				pacman -Sy --noconfirm
+			fi
+			;;
+		*) return 1 ;;
+	esac
+}
+
+package_installer() {
+	case "$PKG_MANAGER" in
+		apt) DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends "$@" ;;
+		dnf) dnf -y install "$@" ;;
+		pacman) pacman -S --needed --noconfirm "$@" ;;
+		*) return 1 ;;
+	esac
+}
+
+package_remover() {
+	case "$PKG_MANAGER" in
+		apt) DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 remove -y "$@" ;;
+		dnf) dnf -y remove "$@" ;;
+		pacman) pacman -Rns --noconfirm "$@" ;;
+		*) return 1 ;;
+	esac
+}
+
+install_packages_raw() {
+	: >"$PKG_LOG" 2>/dev/null || true
+	if package_installer "$@" >>"$PKG_LOG" 2>&1; then
+		return 0
+	fi
+
+	if [ "$PKG_REFRESHED" -eq 0 ]; then
+		warning "Package installation failed; refreshing package metadata and retrying."
+		if refresh_package_lists >>"$PKG_LOG" 2>&1; then
+			PKG_REFRESHED=1
+			: >"$PKG_LOG" 2>/dev/null || true
+			if package_installer "$@" >>"$PKG_LOG" 2>&1; then
+				return 0
+			fi
+		else
+			warning "Could not refresh package metadata."
+		fi
+	fi
+
+	tail -n 25 "$PKG_LOG" >&2 2>/dev/null || true
+	return 1
+}
+
+install_logical_package() {
+	logical=$1
+	is_workload=${2:-0}
+
+	if installed=$(resolve_installed_package "$logical"); then
+		success "$logical is already installed${installed:+ as $installed}"
+		return 0
+	fi
+
+	candidates=$(package_candidates "$logical") || {
+		warning "No package mapping for $logical on $PKG_MANAGER."
+		return 1
+	}
+
+	PKG_SNAPSHOT=""
+	if [ "$is_workload" -eq 1 ]; then
+		begin_workload_snapshot
+	fi
+
+	for candidate in $candidates; do
+		info "Installing $candidate"
+		if install_packages_raw "$candidate"; then
+			if package_installed "$candidate"; then
+				PKG_INSTALLED_THIS_RUN="${PKG_INSTALLED_THIS_RUN:+$PKG_INSTALLED_THIS_RUN }$candidate"
+				if [ "$is_workload" -eq 1 ]; then
+					PKG_INSTALLED_WORKLOADS="${PKG_INSTALLED_WORKLOADS:+$PKG_INSTALLED_WORKLOADS }$candidate"
+					record_workload_snapshot
+				fi
+				finish_workload_snapshot
+				success "Installed $candidate"
+				return 0
+			fi
+			warning "The package manager reported success, but $candidate is not installed."
+		else
+			warning "Could not install $candidate."
+		fi
+	done
+
+	if [ "$is_workload" -eq 1 ]; then
+		# Record dependencies left behind by a failed or partial installation.
+		record_workload_snapshot
+	fi
+	finish_workload_snapshot
+
+	return 1
+}
+
+load_package_manifest() {
+	RECORDED_PACKAGES=""
+	RECORDED_WORKLOADS=""
+	RECORDED_MANAGER=""
+	SERVERDECK_INSTALLED_PACKAGES=""
+	SERVERDECK_WORKLOAD_PACKAGES=""
+	SERVERDECK_PACKAGE_MANAGER=""
+
+	if [ -r "$PKG_MANIFEST" ]; then
+		# shellcheck disable=SC1090
+		. "$PKG_MANIFEST"
+		RECORDED_PACKAGES="${SERVERDECK_INSTALLED_PACKAGES:-}"
+		RECORDED_WORKLOADS="${SERVERDECK_WORKLOAD_PACKAGES:-}"
+		RECORDED_MANAGER="${SERVERDECK_PACKAGE_MANAGER:-}"
+	fi
+}
+
+record_package() {
+	case " $RECORDED_PACKAGES " in
+		*" $1 "*) ;;
+		*) RECORDED_PACKAGES="${RECORDED_PACKAGES:+$RECORDED_PACKAGES }$1" ;;
+	esac
+}
+
+record_workload() {
+	record_package "$1"
+	case " $RECORDED_WORKLOADS " in
+		*" $1 "*) ;;
+		*) RECORDED_WORKLOADS="${RECORDED_WORKLOADS:+$RECORDED_WORKLOADS }$1" ;;
+	esac
+}
+
+write_package_manifest() {
+	[ -n "$RECORDED_PACKAGES" ] || return 0
+
+	umask 022
+	cat >"$PKG_MANIFEST" <<EOF
+# Managed by ServerDeck. Packages recorded by this installer.
+# Only SERVERDECK_WORKLOAD_PACKAGES are removed by --remove-workloads or --purge.
+SERVERDECK_PACKAGE_MANAGER='$PKG_MANAGER'
+SERVERDECK_INSTALLED_PACKAGES='$RECORDED_PACKAGES'
+SERVERDECK_WORKLOAD_PACKAGES='$RECORDED_WORKLOADS'
+EOF
+	chown root:"$SERVICE_USER" "$PKG_MANIFEST" 2>/dev/null || true
+	chmod 0640 "$PKG_MANIFEST" 2>/dev/null || true
+}
+
+install_host_packages() {
+	if [ "$NO_PACKAGES" -eq 1 ]; then
+		info "Skipping host package installation (--no-packages)"
+		return 0
+	fi
+
+	detect_package_manager
+	if [ -z "$PKG_MANAGER" ]; then
+		if [ -n "$WORKLOADS" ]; then
+			fail "No supported package manager (apt, dnf or pacman) was found; cannot install requested workloads."
+		fi
+		warning "No supported package manager was found; skipping host tool installation."
+		return 0
+	fi
+
+	load_package_manifest
+	PKG_LOG="${WORK_DIR:-/tmp}/packages.log"
+	PKG_REFRESHED=0
+	PKG_INSTALLED_THIS_RUN=""
+	PKG_INSTALLED_WORKLOADS=""
+
+	info "Preparing host tools with $PKG_MANAGER"
+	failures=""
+	for logical in smartmontools pciutils; do
+		install_logical_package "$logical" 0 || failures="$failures $logical"
+	done
+	for logical in $WORKLOADS; do
+		install_logical_package "$logical" 1 || failures="$failures $logical"
+	done
+
+	for package in $PKG_INSTALLED_THIS_RUN; do
+		record_package "$package"
+	done
+	for package in $PKG_INSTALLED_WORKLOADS; do
+		record_workload "$package"
+	done
+	write_package_manifest
+
+	explicit_failures=""
+	optional_failures=""
+	for logical in $failures; do
+		case " $WORKLOADS " in
+			*" $logical "*) explicit_failures="$explicit_failures $logical" ;;
+			*) optional_failures="$optional_failures $logical" ;;
+		esac
+	done
+
+	if [ -n "$optional_failures" ]; then
+		warning "Optional host tools could not be installed:$optional_failures"
+	fi
+	if [ -n "$explicit_failures" ]; then
+		fail "Requested workload packages could not be installed:$explicit_failures"
+	fi
+
+	success "Host package setup complete"
+}
+
+remove_installed_packages() {
+	if [ ! -f "$PKG_MANIFEST" ]; then
+		info "No ServerDeck-installed packages are recorded."
+		return 0
+	fi
+
+	load_package_manifest
+	if [ -z "$RECORDED_WORKLOADS" ]; then
+		rm -f "$PKG_MANIFEST"
+		info "No ServerDeck-installed workload packages to remove."
+		return 0
+	fi
+
+	detect_package_manager
+	if [ -z "$PKG_MANAGER" ]; then
+		warning "No supported package manager was found; workload packages were left installed."
+		info "Package manifest preserved at $PKG_MANIFEST."
+		return 1
+	fi
+
+	to_remove=""
+	for package in $RECORDED_WORKLOADS; do
+		if package_installed "$package"; then
+			to_remove="${to_remove:+$to_remove }$package"
+		fi
+	done
+
+	if [ -z "$to_remove" ]; then
+		success "ServerDeck-installed workload packages are already absent"
+		rm -f "$PKG_MANIFEST"
+		return 0
+	fi
+
+	PKG_LOG="${TMPDIR:-/tmp}/serverdeck-packages.log"
+	: >"$PKG_LOG" 2>/dev/null || true
+	info "Removing packages installed by ServerDeck:$to_remove"
+	if package_remover $to_remove >>"$PKG_LOG" 2>&1; then
+		success "Removed packages:$to_remove"
+		rm -f "$PKG_MANIFEST"
+		case "$to_remove" in
+			*docker*|*moby*) warning "Docker data under /var/lib/docker was left in place." ;;
+		esac
+		case "$to_remove" in
+			*incus*) warning "Incus data under /var/lib/incus was left in place." ;;
+		esac
+	else
+		tail -n 25 "$PKG_LOG" >&2 2>/dev/null || true
+		warning "Some packages could not be removed; review the output above."
+		info "Package manifest preserved at $PKG_MANIFEST."
+		return 1
+	fi
 }
 
 download_release() {
@@ -837,8 +1261,15 @@ Defaults:$SERVICE_USER !requiretty
 $SERVICE_USER ALL=(root) NOPASSWD: $HELPER_PATH
 EOF
 	if ! visudo -cf "$sudoers_tmp" >/dev/null 2>&1; then
-		rm -f "$sudoers_tmp"
-		fail "Generated sudoers rule is invalid."
+		# sudo-rs (used by newer Ubuntu releases) does not implement
+		# requiretty. The minimal rule is sufficient on those hosts.
+		cat > "$sudoers_tmp" <<EOF
+$SERVICE_USER ALL=(root) NOPASSWD: $HELPER_PATH
+EOF
+		if ! visudo -cf "$sudoers_tmp" >/dev/null 2>&1; then
+			rm -f "$sudoers_tmp"
+			fail "Generated sudoers rule is invalid."
+		fi
 	fi
 	install -o root -g root -m 0440 "$sudoers_tmp" /etc/sudoers.d/serverdeck
 	rm -f "$sudoers_tmp"
@@ -977,7 +1408,6 @@ install_serverdeck() {
 	validate_inputs
 	check_platform
 	check_existing_service
-	stop_services
 
 	if [ -n "$(current_release_path)" ]; then
 		OLD_RELEASE=$(current_release_path)
@@ -985,6 +1415,8 @@ install_serverdeck() {
 
 	create_service_account
 	prepare_directories
+	install_host_packages
+	stop_services
 	check_port_available
 
 	backup_database
@@ -1024,10 +1456,17 @@ install_serverdeck() {
 	printf '  Service:  %s\n' "$SERVICE_NAME.service"
 	printf '  Data:     %s\n' "$DATA_DIR"
 	printf '  Config:   %s\n' "$CONF_DIR"
+	if [ -n "$PKG_INSTALLED_THIS_RUN" ]; then
+		printf '  Packages: %s\n' "$PKG_INSTALLED_THIS_RUN"
+	fi
 	printf '\n'
 	printf 'Sign in with any local Linux account that can use sudo (sudo or wheel group).\n'
 	printf 'Those accounts become ServerDeck administrators on first login; other accounts are read-only.\n'
 	printf 'Run %ssudo serverdeck doctor%s to verify optional integrations.\n' "$BOLD" "$RESET"
+
+	case " $PKG_INSTALLED_WORKLOADS " in
+		*" incus "*) printf 'Initialize Incus before creating instances: sudo incus admin init\n' ;;
+	esac
 
 	if [ "$SERVICE_WAS_ACTIVE" -eq 0 ] && [ "$NO_START" -eq 1 ]; then
 		printf '\nThe service was not started. Start it with: sudo serverdeck start\n'
@@ -1041,6 +1480,9 @@ uninstall_serverdeck() {
 
 	if [ "$PURGE" -eq 1 ] && [ "$ASSUME_YES" -ne 1 ]; then
 		printf 'This will permanently delete %s and %s.\n' "$DATA_DIR" "$CONF_DIR"
+		if [ -f "$PKG_MANIFEST" ]; then
+			printf 'Opt-in workload packages installed by ServerDeck will also be removed.\n'
+		fi
 		printf 'Type "purge" to continue: '
 		read -r answer
 		[ "$answer" = "purge" ] || fail "Uninstall cancelled."
@@ -1068,6 +1510,12 @@ uninstall_serverdeck() {
 	systemctl daemon-reload >/dev/null 2>&1 || true
 	systemctl reset-failed serverdeck.service serverdeck-scheduler.service >/dev/null 2>&1 || true
 
+	if [ "$PURGE" -eq 1 ] || [ "$REMOVE_WORKLOADS" -eq 1 ]; then
+		if ! remove_installed_packages; then
+			fail "ServerDeck was removed, but workload packages could not be removed. The package manifest was preserved; fix the package manager error and run the uninstall again."
+		fi
+	fi
+
 	if [ "$PURGE" -eq 1 ]; then
 		rm -rf "$DATA_DIR" "$CONF_DIR"
 		if getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
@@ -1081,6 +1529,7 @@ uninstall_serverdeck() {
 		success "ServerDeck removed"
 		printf '\nPreserved:\n  %s\n  %s\n' "$DATA_DIR" "$CONF_DIR"
 		printf 'Use --purge to remove them as well.\n'
+		printf 'Use --remove-workloads with --uninstall to remove opt-in workloads installed by ServerDeck.\n'
 	fi
 }
 

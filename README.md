@@ -53,6 +53,11 @@ Package updates use the native manager:
 - Pacman on Arch; install `arch-audit` for CVE mapping, otherwise security
   counts are reported as unavailable
 
+The installer uses the host's native package manager to add two base host
+tools by default: `smartmontools` for disk health and `pciutils` for hardware
+inventory. The Incus, Docker, and ZFS workloads are opt-in; see
+[Host packages](#host-packages).
+
 Alpine/musl, OpenRC, non-x86_64 architectures, and multi-node fleet management
 are not part of this release.
 
@@ -79,6 +84,34 @@ Sign in with a local Linux account in `sudo` (Debian/Ubuntu) or `wheel`
 (Fedora/RHEL/Arch). The first successful login provisions that account as an
 administrator. Other Linux accounts become read-only viewers.
 
+### Host packages
+
+The installer normally installs `smartmontools` and `pciutils` through APT,
+DNF/DNF5, or Pacman. These are base host tools used by the SMART and hardware
+pages and remain installed after ServerDeck is uninstalled.
+
+Container and storage runtimes are opt-in:
+
+```sh
+sudo ./install.sh --workloads incus
+sudo ./install.sh --workloads incus,docker
+sudo ./install.sh --workloads all
+```
+
+The supported workload names are `incus`, `docker`, and `zfs`. Package names
+are resolved per distribution: for example Docker uses `docker.io` on APT,
+`moby-engine` on Fedora, and `docker` on Arch. ZFS requires a distribution
+repository that provides OpenZFS; it is not available in the official Fedora
+or Arch repositories, so `--workloads zfs` fails there with the package
+manager output. Docker CE repositories are likewise not added automatically.
+
+Use `--no-packages` to skip all package installation and manage host packages
+yourself. The installer records the packages it installs in
+`/etc/serverdeck/workload-packages.conf`, including dependencies pulled in for
+an opt-in workload. Only packages that ServerDeck installed are eligible for
+removal; packages that were already present are never removed. See
+[Uninstall](#uninstall).
+
 ## Operations
 
 ```sh
@@ -92,8 +125,23 @@ sudo serverdeck artisan migrate:status
 The installer supports upgrades from a newer tarball. It preserves
 `/var/lib/serverdeck` and `/etc/serverdeck`, backs up SQLite before migrations,
 keeps the previous release, and rolls back automatically if migrations or the
-health check fail. See [`packaging/README.md`](packaging/README.md) for the
-layout, upgrade, rollback, uninstall, and rebuild details.
+health check fail. Package installation happens before the running service is
+stopped, so a package failure does not interrupt an existing installation.
+
+## Uninstall
+
+```sh
+sudo ./install.sh --uninstall
+sudo ./install.sh --uninstall --remove-workloads
+sudo ./install.sh --uninstall --purge --yes
+```
+
+A plain uninstall removes the application but keeps configuration, data, base
+host tools, and workloads. `--remove-workloads` also removes the opt-in Incus,
+Docker, or ZFS packages that ServerDeck installed. `--purge` removes the
+configuration and data as well. Packages that existed before ServerDeck are
+never removed. Workload data such as `/var/lib/incus` and `/var/lib/docker` is
+left in place. See [`packaging/README.md`](packaging/README.md) for details.
 
 ## Development
 

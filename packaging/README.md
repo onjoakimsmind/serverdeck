@@ -28,9 +28,10 @@ Upgrades are applied with `apt-get -y --with-new-pkgs upgrade`,
 `dnf -y upgrade`, or `pacman -Syu --noconfirm` respectively. ServerDeck never
 reboots the host automatically.
 
-Not yet packaged: Alpine/musl, OpenRC, non-x86_64 architectures. Incus,
-Docker, ZFS and smartmontools are optional host integrations and are
-detected at runtime.
+Not yet packaged: Alpine/musl, OpenRC, non-x86_64 architectures. The
+installer adds the base host tools `smartmontools` and `pciutils` by default
+through the native package manager. Incus, Docker, and ZFS are opt-in
+workloads and are otherwise detected at runtime when already installed.
 
 ## Install
 
@@ -49,6 +50,8 @@ The default URL is `http://<host-ip>:8090`. Common options:
 sudo ./install.sh --port 8443 --bind 0.0.0.0
 sudo ./install.sh --url https://panel.example.com --open-firewall
 sudo ./install.sh --no-start
+sudo ./install.sh --workloads incus,docker
+sudo ./install.sh --no-packages
 ```
 
 Sign in with a local Linux account that belongs to `sudo` (Debian/Ubuntu) or
@@ -58,6 +61,64 @@ ServerDeck administrator. Other Linux accounts are provisioned read-only.
 There is no separate ServerDeck password database. Passwords are checked by
 PAM against the host's existing Linux authentication stack. ServerDeck never
 stores the submitted password.
+
+## Host packages
+
+The installer uses APT, DNF/DNF5, or Pacman and installs these base tools
+unless `--no-packages` is given:
+
+| Logical package | Purpose | APT | DNF | Pacman |
+| --- | --- | --- | --- | --- |
+| `smartmontools` | SMART disk health | `smartmontools` | `smartmontools` | `smartmontools` |
+| `pciutils` | PCI/GPU inventory | `pciutils` | `pciutils` | `pciutils` |
+
+Workloads are opt-in and can be selected with `--workloads LIST`:
+
+| Workload | APT candidate | DNF candidate | Pacman candidate |
+| --- | --- | --- | --- |
+| `incus` | `incus` | `incus` | `incus` |
+| `docker` | `docker.io`, then `docker-ce` | `moby-engine`, then `docker-ce`, `docker` | `docker` |
+| `zfs` | `zfsutils-linux` | `zfs` | `zfs-utils` |
+
+`--workloads all` selects Incus, Docker, and ZFS. A requested workload that
+cannot be installed is a hard failure with the package manager output; optional
+base-tool failures are warnings because the rest of the panel still works.
+
+Package repositories are not modified. In particular:
+
+- Fedora's official repositories provide `moby-engine`, not Docker CE. Add the
+  Docker CE repository yourself before using `--workloads docker` if that is
+  the desired engine.
+- ZFS is not available in the official Fedora or Arch repositories. Configure
+  OpenZFS repositories first, or use a distribution such as Ubuntu that ships
+  `zfsutils-linux`.
+- On Arch, the installer only runs `pacman -Sy` when no sync database exists;
+  otherwise it uses the host's current package metadata and refreshes once if
+  an install fails.
+
+Package installation happens before the running service is stopped during an
+upgrade, so a failed package operation leaves an existing installation
+untouched.
+
+The packages installed by the installer are recorded in
+`/etc/serverdeck/workload-packages.conf`:
+
+```sh
+SERVERDECK_PACKAGE_MANAGER='apt'
+SERVERDECK_INSTALLED_PACKAGES='smartmontools pciutils incus incus-base ...'
+SERVERDECK_WORKLOAD_PACKAGES='incus incus-base ...'
+```
+
+For opt-in workloads, the installer snapshots the installed package set before
+and after the transaction. Packages added by that transaction, including
+dependencies, are recorded as workload packages. This matters for APT, where
+`incus` is a metapackage and removing only the metapackage would leave the
+daemon behind. The manifest distinguishes base tools from opt-in workloads:
+only packages in `SERVERDECK_WORKLOAD_PACKAGES` are removable, and only if
+ServerDeck installed them. Packages that were already present when ServerDeck
+was installed are not recorded and are therefore never removed. On APT,
+dependencies of base tools are not tracked because base tools are never
+removed.
 
 ## Operations
 
@@ -86,6 +147,7 @@ The web service and scheduler are systemd units:
 | `/var/lib/serverdeck/backups` | Pre-upgrade database backups |
 | `/etc/serverdeck/serverdeck.env` | Application environment |
 | `/etc/serverdeck/serverdeck.conf` | Installer/CLI paths and port |
+| `/etc/serverdeck/workload-packages.conf` | Packages installed by ServerDeck |
 | `/etc/serverdeck/Caddyfile` | FrankenPHP/Caddy configuration |
 | `/usr/local/sbin/serverdeck-hostctl` | Root-only audited host helper |
 | `/usr/local/libexec/serverdeck/pamcheck` | PAM authentication utility |
@@ -115,12 +177,27 @@ packaged configuration. Existing data and `APP_KEY` are preserved.
 
 ```sh
 sudo ./install.sh --uninstall
+sudo ./install.sh --uninstall --remove-workloads
 sudo ./install.sh --uninstall --purge --yes
 ```
 
 Without `--purge`, the application, units, helper, PAM service, sudo rule and
 the `pam_faillock` tmpfiles entry are removed while `/var/lib/serverdeck` and
 `/etc/serverdeck` are preserved.
+
+`--remove-workloads` additionally removes the opt-in packages recorded in
+`SERVERDECK_WORKLOAD_PACKAGES`. `--purge` implies that removal and also deletes
+configuration, data, and the service account. In both cases:
+
+- Base tools such as `smartmontools` and `pciutils` remain installed.
+- Packages that were already installed before ServerDeck are never removed.
+- Workload data directories such as `/var/lib/incus` and `/var/lib/docker`
+  remain in place and must be handled separately if they are no longer needed.
+- On Pacman, removal uses `pacman -Rns`; review the transaction if other host
+  packages depend on the workload's dependencies.
+- If package removal fails, the manifest and any preserved configuration and
+  data are left in place so the uninstall can be retried after fixing the
+  package manager error.
 
 ## Security notes
 
