@@ -170,10 +170,13 @@ fi
 info "Starting the ServerDeck installer"
 printf '%sThe installer may ask for your sudo password and host package manager confirmation.%s\n\n' "$DIM" "$RESET"
 
+# $SUDO is either empty (already root) or the literal string "sudo"; leaving
+# it unquoted is intentional so an empty value contributes no argument at
+# all, instead of being passed as a literal empty command name.
 if has_tty; then
-	"$SUDO" sh "$INSTALLER" "$@" </dev/tty
+	$SUDO sh "$INSTALLER" "$@" </dev/tty
 else
-	"$SUDO" sh "$INSTALLER" "$@"
+	$SUDO sh "$INSTALLER" "$@"
 fi
 
 printf '\n%sServerDeck is installed.%s\n' "$GREEN$BOLD" "$RESET"
