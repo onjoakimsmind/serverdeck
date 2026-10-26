@@ -2722,6 +2722,10 @@ def op_apt_status(payload):
     latest_kernel = apt_latest_kernel()
 
     return {
+        "manager": "apt",
+        "manager_label": "APT",
+        "security_supported": True,
+        "security_note": None,
         "packages": plan,
         "held_back": held_back,
         "counts": {
@@ -2779,6 +2783,476 @@ def op_apt_upgrade(payload):
         "reboot_packages": after["packages"],
         "output_tail": apt_tail(out),
     }
+
+
+def package_manager():
+    if os.path.exists("/usr/bin/apt-get") and os.path.exists("/usr/bin/apt"):
+        return "apt"
+    if os.path.exists("/usr/bin/dnf") or os.path.exists("/usr/bin/dnf5"):
+        return "dnf"
+    if os.path.exists("/usr/bin/pacman"):
+        return "pacman"
+    raise HostError("No supported package manager (apt, dnf or pacman) was found.")
+
+
+def version_key(value):
+    return tuple(int(part) for part in re.findall(r"\d+", str(value)))
+
+
+def dnf_parse_check_update(text):
+    packages = []
+    seen = set()
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.endswith(":") or stripped in {"Upgrades", "Obsoleting Packages"}:
+            continue
+        fields = stripped.split()
+        if len(fields) < 3:
+            continue
+        name_arch, candidate, repository = fields[0], fields[1], fields[2]
+        if "." not in name_arch:
+            continue
+        name, architecture = name_arch.rsplit(".", 1)
+        if not re.match(r"^[A-Za-z0-9_+.-]+$", name) or not re.match(r"^[A-Za-z0-9_.-]+$", architecture):
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        packages.append(
+            {
+                "name": name,
+                "current_version": None,
+                "candidate_version": candidate,
+                "repository": repository,
+                "repositories": [repository] if repository else [],
+                "architecture": architecture,
+                "security": False,
+                "is_new": False,
+            }
+        )
+    return packages
+
+
+def dnf_installed_versions(names):
+    installed = {}
+    names = [name for name in names if re.match(r"^[A-Za-z0-9_+.-]+$", name)]
+    for offset in range(0, len(names), 40):
+        chunk = names[offset:offset + 40]
+        if not chunk:
+            continue
+        code, out, _ = run(
+            ["/usr/bin/rpm", "-q", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\n", *chunk],
+            timeout=40,
+            combine=True,
+        )
+        if code not in (0, 1):
+            continue
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) == 2 and parts[0] and parts[1]:
+                installed[parts[0]] = parts[1]
+    return installed
+
+
+def dnf_security_names():
+    try:
+        code, out, _ = run(
+            ["/usr/bin/dnf", "-q", "check-update", "--security"],
+            timeout=180,
+            combine=True,
+        )
+    except HostError:
+        return None
+    if code not in (0, 100):
+        return None
+    return {package["name"] for package in dnf_parse_check_update(out)}
+
+
+def dnf_latest_kernel():
+    code, out, _ = run(
+        ["/usr/bin/rpm", "-q", "kernel", "--last"],
+        timeout=30,
+        combine=True,
+    )
+    if code not in (0, 1):
+        return None
+    for line in out.splitlines():
+        match = re.match(r"^kernel-(\S+)", line.strip())
+        if match:
+            return match.group(1)
+    return None
+
+
+def dnf_reboot_state(latest_kernel):
+    required = False
+    packages = []
+    needs_restarting = None
+    for candidate in ("/usr/bin/needs-restarting", "/usr/sbin/needs-restarting"):
+        if os.path.exists(candidate):
+            needs_restarting = candidate
+            break
+
+    if needs_restarting:
+        code, _, _ = run([needs_restarting, "-r"], timeout=60, combine=True)
+        if code == 1:
+            required = True
+
+    if latest_kernel and latest_kernel != os.uname().release:
+        required = True
+        packages.append("kernel")
+
+    packages_path = "/var/run/reboot-required.pkgs"
+    if os.path.exists("/run/reboot-required"):
+        required = True
+        if os.path.exists(packages_path) and not packages:
+            try:
+                with open(packages_path, "r", encoding="utf-8", errors="replace") as handle:
+                    packages = [line.strip() for line in handle if line.strip()][:100]
+            except OSError:
+                pass
+
+    return {"required": required, "packages": packages}
+
+
+def directory_mtime(*paths):
+    stamps = []
+    for path in paths:
+        try:
+            stamps.append(int(os.path.getmtime(path)))
+        except OSError:
+            continue
+    return max(stamps) if stamps else None
+
+
+def dnf_lists_updated_at():
+    return directory_mtime("/var/cache/dnf", "/var/cache/libdnf5")
+
+
+def dnf_last_upgrade_at():
+    try:
+        _, out, _ = run(["/usr/bin/dnf", "-q", "history", "list"], timeout=30, combine=True)
+    except HostError:
+        return None
+    match = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", out)
+    if not match:
+        return None
+    try:
+        return int(time.mktime(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")))
+    except ValueError:
+        return None
+
+
+def dnf_unattended_active():
+    code, out, _ = run(
+        ["/usr/bin/systemctl", "is-active", "dnf-automatic.timer"],
+        timeout=10,
+        combine=True,
+    )
+    return code == 0 and out.strip() == "active"
+
+
+def dnf_status():
+    code, out, _ = run(
+        ["/usr/bin/dnf", "-q", "check-update"],
+        timeout=180,
+        combine=True,
+    )
+    if code not in (0, 100):
+        raise HostError(apt_tail(out) or "dnf check-update failed.")
+
+    packages = dnf_parse_check_update(out)
+    installed = dnf_installed_versions([package["name"] for package in packages])
+    for package in packages:
+        package["current_version"] = installed.get(package["name"])
+        package["is_new"] = package["name"] not in installed
+
+    security_names = dnf_security_names()
+    security_supported = security_names is not None
+    if security_supported:
+        for package in packages:
+            package["security"] = package["name"] in security_names
+
+    running_kernel = os.uname().release
+    latest_kernel = dnf_latest_kernel()
+    reboot = dnf_reboot_state(latest_kernel)
+
+    return {
+        "manager": "dnf",
+        "manager_label": "DNF",
+        "security_supported": security_supported,
+        "security_note": None if security_supported else "DNF security advisories could not be read on this host.",
+        "packages": packages,
+        "held_back": [],
+        "counts": {
+            "total": len(packages),
+            "planned": len(packages),
+            "security": sum(1 for package in packages if package["security"]),
+            "new_packages": sum(1 for package in packages if package["is_new"]),
+            "held_back": 0,
+        },
+        "reboot_required": reboot["required"],
+        "reboot_packages": reboot["packages"],
+        "running_kernel": running_kernel,
+        "latest_kernel": latest_kernel,
+        "kernel_update_pending": bool(latest_kernel and latest_kernel != running_kernel),
+        "lists_updated_at": dnf_lists_updated_at(),
+        "last_upgrade_at": dnf_last_upgrade_at(),
+        "unattended_upgrades_active": dnf_unattended_active(),
+        "simulated_at": int(time.time()),
+    }
+
+
+def dnf_refresh():
+    code, out, _ = run(
+        ["/usr/bin/dnf", "-q", "makecache", "--refresh"],
+        timeout=300,
+        combine=True,
+    )
+    if code != 0:
+        raise HostError(apt_tail(out) or "dnf makecache failed.")
+    return {"updated_at": int(time.time()), "output_tail": apt_tail(out)}
+
+
+def dnf_upgrade():
+    before = dnf_reboot_state(dnf_latest_kernel())
+    code, out, _ = run(
+        ["/usr/bin/dnf", "-y", "upgrade"],
+        timeout=900,
+        combine=True,
+    )
+    if code != 0:
+        raise HostError(apt_tail(out) or "dnf upgrade failed.")
+
+    after = dnf_reboot_state(dnf_latest_kernel())
+    return {
+        "completed_at": int(time.time()),
+        "reboot_required": after["required"],
+        "reboot_required_before": before["required"],
+        "reboot_packages": after["packages"],
+        "output_tail": apt_tail(out),
+    }
+
+
+def pacman_parse_updates(text):
+    packages = []
+    held_back = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        ignored = "[ignored]" in stripped
+        fields = stripped.replace("[ignored]", "").split()
+        if len(fields) < 4 or fields[2] != "->":
+            continue
+        name, current, candidate = fields[0], fields[1], fields[3]
+        if not re.match(r"^[A-Za-z0-9_+.-]+$", name) or not re.match(r"^[A-Za-z0-9_.:+~-]+$", candidate):
+            continue
+        package = {
+            "name": name,
+            "current_version": current,
+            "candidate_version": candidate,
+            "repository": None,
+            "repositories": [],
+            "architecture": os.uname().machine,
+            "security": False,
+            "is_new": False,
+        }
+        if ignored:
+            held_back.append(package)
+        else:
+            packages.append(package)
+    return packages, held_back
+
+
+def pacman_security_names():
+    if not os.path.exists("/usr/bin/arch-audit"):
+        return None
+    try:
+        code, out, _ = run(["/usr/bin/arch-audit", "-u"], timeout=120, combine=True)
+    except HostError:
+        return None
+    if code not in (0, 1):
+        return None
+    names = set()
+    for line in out.splitlines():
+        fields = line.split()
+        if fields and re.match(r"^[A-Za-z0-9_+.-]+$", fields[0]):
+            names.add(fields[0])
+    return names
+
+
+def pacman_latest_kernel():
+    try:
+        entries = [
+            entry
+            for entry in os.listdir("/usr/lib/modules")
+            if os.path.isdir(os.path.join("/usr/lib/modules", entry))
+        ]
+    except OSError:
+        return None
+    if not entries:
+        return None
+    return sorted(entries, key=version_key)[-1]
+
+
+def pacman_reboot_state(latest_kernel):
+    required = False
+    packages = []
+    if latest_kernel and latest_kernel != os.uname().release:
+        required = True
+        packages.append("linux")
+    if os.path.exists("/run/reboot-required"):
+        required = True
+    return {"required": required, "packages": packages}
+
+
+def pacman_lists_updated_at():
+    try:
+        stamps = []
+        for entry in os.scandir("/var/lib/pacman/sync"):
+            if entry.is_file():
+                stamps.append(int(entry.stat().st_mtime))
+        return max(stamps) if stamps else None
+    except OSError:
+        return None
+
+
+def pacman_last_upgrade_at():
+    path = "/var/log/pacman.log"
+    try:
+        with open(path, "rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - 262144))
+            text = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+    matches = re.findall(
+        r"^\[(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})[^\]]*\] \[ALPM\] (?:upgraded|installed|reinstalled)",
+        text,
+        re.MULTILINE,
+    )
+    if not matches:
+        return None
+    date, clock = matches[-1]
+    try:
+        return int(time.mktime(time.strptime(f"{date} {clock}", "%Y-%m-%d %H:%M:%S")))
+    except ValueError:
+        return None
+
+
+def pacman_unattended_active():
+    for unit in ("arch-update.timer", "pacman-auto-update.timer"):
+        code, out, _ = run(
+            ["/usr/bin/systemctl", "is-active", unit],
+            timeout=10,
+            combine=True,
+        )
+        if code == 0 and out.strip() == "active":
+            return True
+    return False
+
+
+def pacman_status():
+    code, out, _ = run(["/usr/bin/pacman", "-Qu"], timeout=120, combine=True)
+    if code not in (0, 1):
+        raise HostError(apt_tail(out) or "pacman -Qu failed.")
+    if "error:" in out.lower():
+        raise HostError(apt_tail(out) or "pacman -Qu failed.")
+
+    packages, held_back = pacman_parse_updates(out)
+    security_names = pacman_security_names()
+    security_supported = security_names is not None
+    if security_supported:
+        for package in packages + held_back:
+            package["security"] = package["name"] in security_names
+
+    running_kernel = os.uname().release
+    latest_kernel = pacman_latest_kernel()
+    reboot = pacman_reboot_state(latest_kernel)
+
+    return {
+        "manager": "pacman",
+        "manager_label": "Pacman",
+        "security_supported": security_supported,
+        "security_note": None if security_supported else "Pacman does not expose security advisory metadata; install arch-audit for CVE mapping.",
+        "packages": packages,
+        "held_back": held_back,
+        "counts": {
+            "total": len(packages) + len(held_back),
+            "planned": len(packages),
+            "security": sum(1 for package in packages + held_back if package["security"]),
+            "new_packages": 0,
+            "held_back": len(held_back),
+        },
+        "reboot_required": reboot["required"],
+        "reboot_packages": reboot["packages"],
+        "running_kernel": running_kernel,
+        "latest_kernel": latest_kernel,
+        "kernel_update_pending": bool(latest_kernel and latest_kernel != running_kernel),
+        "lists_updated_at": pacman_lists_updated_at(),
+        "last_upgrade_at": pacman_last_upgrade_at(),
+        "unattended_upgrades_active": pacman_unattended_active(),
+        "simulated_at": int(time.time()),
+    }
+
+
+def pacman_refresh():
+    code, out, _ = run(
+        ["/usr/bin/pacman", "-Sy", "--noconfirm"],
+        timeout=300,
+        combine=True,
+    )
+    if code != 0:
+        raise HostError(apt_tail(out) or "pacman -Sy failed.")
+    return {"updated_at": int(time.time()), "output_tail": apt_tail(out)}
+
+
+def pacman_upgrade():
+    before = pacman_reboot_state(pacman_latest_kernel())
+    code, out, _ = run(
+        ["/usr/bin/pacman", "-Syu", "--noconfirm"],
+        timeout=900,
+        combine=True,
+    )
+    if code != 0:
+        raise HostError(apt_tail(out) or "pacman -Syu failed.")
+
+    after = pacman_reboot_state(pacman_latest_kernel())
+    return {
+        "completed_at": int(time.time()),
+        "reboot_required": after["required"],
+        "reboot_required_before": before["required"],
+        "reboot_packages": after["packages"],
+        "output_tail": apt_tail(out),
+    }
+
+
+def op_packages_status(payload):
+    manager = package_manager()
+    if manager == "apt":
+        return op_apt_status(payload)
+    if manager == "dnf":
+        return dnf_status()
+    return pacman_status()
+
+
+def op_packages_refresh(payload):
+    manager = package_manager()
+    if manager == "apt":
+        return op_apt_refresh(payload)
+    if manager == "dnf":
+        return dnf_refresh()
+    return pacman_refresh()
+
+
+def op_packages_upgrade(payload):
+    manager = package_manager()
+    if manager == "apt":
+        return op_apt_upgrade(payload)
+    if manager == "dnf":
+        return dnf_upgrade()
+    return pacman_upgrade()
 
 
 def op_zfs_status(payload):
@@ -3880,6 +4354,9 @@ OPS = {
     "apt.status": op_apt_status,
     "apt.refresh": op_apt_refresh,
     "apt.upgrade": op_apt_upgrade,
+    "packages.status": op_packages_status,
+    "packages.refresh": op_packages_refresh,
+    "packages.upgrade": op_packages_upgrade,
     "zfs.status": op_zfs_status,
     "zfs.action": op_zfs_action,
     "systemd.list": op_systemd_list,

@@ -46,7 +46,7 @@ const pages = computed(() => {
         { label: 'Storage & ZFS', meta: 'Pools, datasets, filesystems and disks', href: '/storage', icon: HardDrive },
         { label: 'Disk health', meta: 'SMART attributes, self-tests and ZFS membership', href: '/disks', icon: Disc3 },
         { label: 'Backups', meta: 'Scheduled ZFS and Incus snapshots, retention and restore', href: '/backups', icon: Archive },
-        { label: 'Updates', meta: 'APT updates, security patches and reboot status', href: '/updates', icon: PackageCheck },
+        { label: 'Updates', meta: 'Package updates, security patches and reboot status', href: '/updates', icon: PackageCheck },
         { label: 'Network', meta: 'Interfaces, routes, DNS, firewall and diagnostics', href: '/network', icon: Network },
         { label: 'Docker', meta: 'Containers, state and logs', href: '/docker', icon: Container },
         { label: 'LXC/VM', meta: 'Instances and virtualisation', href: '/incus', icon: Boxes },

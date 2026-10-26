@@ -510,6 +510,18 @@ prepare_directories() {
 		"$DATA_DIR/.local/share" \
 		"$DATA_DIR/.cache"
 	install -d -o root -g "$SERVICE_USER" -m 0750 "/usr/local/libexec/serverdeck"
+	install -d -o root -g root -m 0700 /run/faillock
+
+	# pam_faillock writes its tally files here; keep the path available after
+	# reboot and writable by the sandboxed web service on distributions whose
+	# PAM stack enables faillock (for example Arch Linux).
+	if [ -d /etc/tmpfiles.d ]; then
+		cat > /etc/tmpfiles.d/serverdeck.conf <<EOF
+# Managed by ServerDeck
+d /run/faillock 0700 root root -
+EOF
+		chmod 0644 /etc/tmpfiles.d/serverdeck.conf
+	fi
 
 	if [ ! -f "$DATA_DIR/database/database.sqlite" ]; then
 		install -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0600 /dev/null "$DATA_DIR/database/database.sqlite"
@@ -525,7 +537,7 @@ check_port_available() {
 }
 
 backup_database() {
-	[ -f "$DATA_DIR/database/database.sqlite" ] || return 0
+	[ -s "$DATA_DIR/database/database.sqlite" ] || return 0
 	old_php=""
 	if [ -n "$OLD_RELEASE" ] && [ -x "$OLD_RELEASE/bin/php" ]; then
 		old_php="$OLD_RELEASE/bin/php"
@@ -592,14 +604,25 @@ env_ensure() {
 	fi
 }
 
+detect_host_ip() {
+	host_ip=""
+	if command -v ip >/dev/null 2>&1; then
+		host_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }')
+	fi
+	if [ -z "$host_ip" ] && command -v hostname >/dev/null 2>&1; then
+		host_ip=$(hostname -I 2>/dev/null | awk '{ print $1 }' || true)
+	fi
+	[ -n "$host_ip" ] || host_ip=127.0.0.1
+	printf '%s\n' "$host_ip"
+}
+
 write_environment() {
 	first_install=0
 	if [ ! -f "$ENV_FILE" ]; then
 		first_install=1
 		app_key=$("$NEW_RELEASE/bin/php" -r 'echo "base64:".base64_encode(random_bytes(32));') || fail "Could not generate APP_KEY."
 		if [ -z "$APP_URL_VALUE" ]; then
-			host_ip=$(hostname -I 2>/dev/null | awk '{ print $1 }' || true)
-			[ -n "$host_ip" ] || host_ip=127.0.0.1
+			host_ip=$(detect_host_ip)
 			APP_URL_VALUE="http://$host_ip:$PORT"
 		fi
 
@@ -1036,7 +1059,8 @@ uninstall_serverdeck() {
 		"$HELPER_PATH" \
 		"$PAMCHECK_PATH" \
 		/etc/sudoers.d/serverdeck \
-		/etc/pam.d/serverdeck
+		/etc/pam.d/serverdeck \
+		/etc/tmpfiles.d/serverdeck.conf
 
 	rmdir /usr/local/libexec/serverdeck >/dev/null 2>&1 || true
 	rm -rf "$PREFIX"

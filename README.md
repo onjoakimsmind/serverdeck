@@ -1,58 +1,152 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# ServerDeck
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+ServerDeck is a self-hosted control panel for a single Linux host. It combines
+the day-to-day host controls usually spread across shell sessions into one
+audited interface: Incus containers and VMs, Docker, systemd services, ZFS and
+storage, networking and firewall rules, backups, SMART health, package updates,
+alerts, metrics, and interactive consoles.
 
-## About Laravel
+It is built for real hosts, not simulations. Telemetry is read from the machine
+it runs on, privileged actions go through a root-owned allow-listed helper, and
+authentication uses the host's existing Linux/PAM accounts. ServerDeck does not
+store application passwords.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Features
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+- Dashboard and historical metrics for CPU, memory, load, disks, and network
+- Incus LXC/VM inventory, consoles, images, networks, disks, and device passthrough
+- Docker container inventory, consoles, logs, images, networks, and devices
+- Real root PTY terminal on the host
+- Storage, ZFS pools/datasets, disk inventory, and SMART health
+- Network interfaces, routes, DNS, firewall tables, and firewall rules
+- Backups and snapshots with retention controls
+- Package updates through APT, DNF/DNF5, or Pacman, including reboot state
+- Alert channels, notification routing, and delivery history
+- Linux/PAM sign-in with administrator/operator/viewer roles and audit logging
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+## Architecture
 
-## Learning Laravel
+- Laravel, Inertia, and Vue frontend
+- FrankenPHP/Caddy static web runtime
+- Static PHP CLI for Artisan and the scheduler
+- SQLite for panel state
+- PyInstaller-built root helper for privileged host operations
+- Bundled `pamcheck` utility for PAM authentication
+- systemd units for the web service and scheduler
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+The web process runs as the unprivileged `serverdeck` user. The helper is
+root-owned and invoked through one no-argument `sudo` rule. No system PHP,
+nginx, Apache, Node, or Composer is required on the target host.
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## Supported hosts
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+- x86_64 Linux with glibc 2.31 or newer
+- systemd as PID 1
+- Linux-PAM and sudo with `/etc/sudoers.d`
+- Debian 11+, Ubuntu 20.04+, Fedora 38+, RHEL/Rocky/Alma 9+, Arch and
+  compatible derivatives
 
-## Agentic Development
+Package updates use the native manager:
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+- APT on Debian and Ubuntu, including security-repository counts
+- DNF or DNF5 on Fedora, RHEL, Rocky, and Alma, including security advisories
+- Pacman on Arch; install `arch-audit` for CVE mapping, otherwise security
+  counts are reported as unavailable
 
-```bash
-composer require laravel/boost --dev
+Alpine/musl, OpenRC, non-x86_64 architectures, and multi-node fleet management
+are not part of this release.
 
-php artisan boost:install
+## Install
+
+Download the release tarball and its checksum, then install as root:
+
+```sh
+sha256sum -c serverdeck-0.1.0-linux-x86_64.tar.gz.sha256
+tar -xzf serverdeck-0.1.0-linux-x86_64.tar.gz
+cd serverdeck-0.1.0-linux-x86_64
+sudo ./install.sh
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+The default URL is `http://<host-ip>:8090`. Common options:
 
-## Contributing
+```sh
+sudo ./install.sh --port 8443 --bind 0.0.0.0
+sudo ./install.sh --url https://panel.example.com --open-firewall
+sudo ./install.sh --no-start
+```
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+Sign in with a local Linux account in `sudo` (Debian/Ubuntu) or `wheel`
+(Fedora/RHEL/Arch). The first successful login provisions that account as an
+administrator. Other Linux accounts become read-only viewers.
 
-## Code of Conduct
+## Operations
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```sh
+sudo serverdeck status
+sudo serverdeck doctor
+sudo serverdeck restart
+sudo serverdeck logs -f
+sudo serverdeck artisan migrate:status
+```
 
-## Security Vulnerabilities
+The installer supports upgrades from a newer tarball. It preserves
+`/var/lib/serverdeck` and `/etc/serverdeck`, backs up SQLite before migrations,
+keeps the previous release, and rolls back automatically if migrations or the
+health check fail. See [`packaging/README.md`](packaging/README.md) for the
+layout, upgrade, rollback, uninstall, and rebuild details.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+## Development
+
+Build requirements: PHP 8.5, Composer, Node/npm, and a Linux environment with
+PAM and sudo for host integration.
+
+```sh
+composer install
+cp .env.example .env
+php artisan key:generate
+touch database/database.sqlite
+php artisan migrate
+npm install
+npm run build
+composer run dev
+```
+
+Run the test suite and formatter:
+
+```sh
+php artisan test
+vendor/bin/pint --dirty --format agent
+```
+
+To exercise privileged host operations in development, install or point
+`SERVERDECK_HOSTCTL` at a locally built `serverdeck-hostctl`. The packaged
+helper can be rebuilt with:
+
+```sh
+sh packaging/scripts/build-helper.sh packaging/.build/helper
+```
+
+## Packaging
+
+On a build host with Docker, Composer, and Node:
+
+```sh
+sh packaging/scripts/build-release.sh --rebuild-assets
+```
+
+The helper is built in a Debian 11 image for glibc 2.31 compatibility.
+FrankenPHP and static PHP versions and checksums are pinned in
+`packaging/scripts/build-release.sh`.
+
+## Security
+
+The default listener is plain HTTP. Put ServerDeck behind a TLS-terminating
+reverse proxy or bind it to a trusted management network. The privileged helper
+validates every operation and path, and all arguments are passed as JSON on
+stdin. Console output and keystrokes are never written to the audit log.
 
 ## License
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+ServerDeck's own source is MIT-licensed. Bundled third-party components retain
+their respective licenses; see
+[`packaging/THIRD-PARTY-NOTICES.md`](packaging/THIRD-PARTY-NOTICES.md).

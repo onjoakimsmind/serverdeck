@@ -24,11 +24,15 @@ class UpdateService
 
         return Cache::remember(self::CACHE_KEY, self::CACHE_SECONDS, function (): array {
             try {
-                return ['available' => true, 'error' => null] + $this->host->run('apt.status', [], 180);
+                return ['available' => true, 'error' => null] + $this->host->run('packages.status', [], 180);
             } catch (HostCommandException $exception) {
                 return [
                     'available' => false,
                     'error' => $exception->getMessage(),
+                    'manager' => 'unknown',
+                    'manager_label' => 'Packages',
+                    'security_supported' => true,
+                    'security_note' => null,
                     'packages' => [],
                     'held_back' => [],
                     'counts' => ['total' => 0, 'planned' => 0, 'security' => 0, 'new_packages' => 0, 'held_back' => 0],
@@ -51,7 +55,7 @@ class UpdateService
      */
     public function refresh(): array
     {
-        $this->host->run('apt.refresh', [], 300);
+        $this->host->run('packages.refresh', [], 300);
 
         return $this->overview(true);
     }
@@ -61,7 +65,7 @@ class UpdateService
      */
     public function upgrade(): array
     {
-        $result = $this->host->run('apt.upgrade', [], 900);
+        $result = $this->host->run('packages.upgrade', [], 900);
 
         return [
             'upgrade' => $result,

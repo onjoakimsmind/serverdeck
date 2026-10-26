@@ -380,9 +380,13 @@ cmd_doctor() {
 	fi
 
 	if command -v apt-get >/dev/null 2>&1; then
-		ok_check "APT update management is supported on this distribution"
-	elif command -v dnf >/dev/null 2>&1 || command -v pacman >/dev/null 2>&1; then
-		warn_check "The Updates page currently targets APT; use the distro package manager outside ServerDeck"
+		ok_check "APT package updates are supported on this distribution"
+	elif command -v dnf >/dev/null 2>&1 || command -v dnf5 >/dev/null 2>&1; then
+		ok_check "DNF package updates are supported on this distribution"
+	elif command -v pacman >/dev/null 2>&1; then
+		ok_check "Pacman package updates are supported on this distribution"
+	else
+		warn_check "No supported package manager (apt, dnf or pacman) was found; the Updates page will be unavailable"
 	fi
 
 	printf '%s\n' "$DIM──────────────────$RESET"

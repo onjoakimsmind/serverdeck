@@ -61,6 +61,30 @@ class UpdatesTest extends TestCase
         $this->actingAs($viewer)->post('/updates/upgrade')->assertForbidden();
     }
 
+    public function test_the_updates_page_reports_the_detected_package_manager(): void
+    {
+        $this->fakeHostTelemetry();
+
+        $this->mock(UpdateService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('overview')->once()->andReturn(array_merge($this->updatesOverview(), [
+                'manager' => 'pacman',
+                'manager_label' => 'Pacman',
+                'security_supported' => false,
+                'security_note' => 'Pacman does not expose security advisory metadata.',
+            ]));
+        });
+
+        $this->actingAs(User::factory()->viewer()->create())
+            ->get('/updates')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Updates/Index')
+                ->where('updates.manager', 'pacman')
+                ->where('updates.manager_label', 'Pacman')
+                ->where('updates.security_supported', false)
+            );
+    }
+
     public function test_operators_can_refresh_package_lists(): void
     {
         $this->fakeHostTelemetry();
@@ -75,6 +99,25 @@ class UpdatesTest extends TestCase
             ->assertSessionHas('success', 'Package lists refreshed. 2 updates available.');
 
         $this->assertDatabaseHas('audit_logs', ['action' => 'apt.refresh']);
+    }
+
+    public function test_refresh_audit_action_uses_the_detected_package_manager(): void
+    {
+        $this->fakeHostTelemetry();
+
+        $this->mock(UpdateService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('refresh')->once()->andReturn(array_merge($this->updatesOverview(), [
+                'manager' => 'dnf',
+                'manager_label' => 'DNF',
+            ]));
+        });
+
+        $this->actingAs(User::factory()->operator()->create())
+            ->post('/updates/refresh')
+            ->assertRedirect()
+            ->assertSessionHas('success', 'Package lists refreshed. 2 updates available.');
+
+        $this->assertDatabaseHas('audit_logs', ['action' => 'dnf.refresh']);
     }
 
     public function test_operators_can_install_pending_updates(): void
@@ -228,7 +271,7 @@ class UpdatesTest extends TestCase
         $this->mock(PrivilegedHost::class, function (MockInterface $mock): void {
             $mock->shouldReceive('run')
                 ->once()
-                ->with('apt.status', [], 180)
+                ->with('packages.status', [], 180)
                 ->andReturn(array_diff_key($this->updatesOverview(), ['available' => true, 'error' => true]));
         });
 
@@ -249,8 +292,8 @@ class UpdatesTest extends TestCase
         $this->mock(PrivilegedHost::class, function (MockInterface $mock): void {
             $mock->shouldReceive('run')
                 ->once()
-                ->with('apt.status', [], 180)
-                ->andThrow(HostCommandException::unavailable('apt.status', 'apt-get simulation failed.'));
+                ->with('packages.status', [], 180)
+                ->andThrow(HostCommandException::unavailable('packages.status', 'apt-get simulation failed.'));
         });
 
         $report = $this->app->make(UpdateService::class)->overview();

@@ -17,6 +17,17 @@ audited root helper, SQLite for panel state, and systemd for supervision.
 - Debian 11+, Ubuntu 20.04+, Fedora 38+, RHEL/Rocky/Alma 9+, Arch and
   compatible derivatives
 
+The Updates page uses the host's native package manager:
+
+- APT on Debian and Ubuntu, including security-repository counts
+- DNF or DNF5 on Fedora, RHEL, Rocky and Alma, including security advisories
+- Pacman on Arch; CVE mapping requires `arch-audit`, otherwise security counts
+  are reported as unavailable
+
+Upgrades are applied with `apt-get -y --with-new-pkgs upgrade`,
+`dnf -y upgrade`, or `pacman -Syu --noconfirm` respectively. ServerDeck never
+reboots the host automatically.
+
 Not yet packaged: Alpine/musl, OpenRC, non-x86_64 architectures. Incus,
 Docker, ZFS and smartmontools are optional host integrations and are
 detected at runtime.
@@ -107,8 +118,9 @@ sudo ./install.sh --uninstall
 sudo ./install.sh --uninstall --purge --yes
 ```
 
-Without `--purge`, the application, units, helper, PAM service and sudo rule
-are removed while `/var/lib/serverdeck` and `/etc/serverdeck` are preserved.
+Without `--purge`, the application, units, helper, PAM service, sudo rule and
+the `pam_faillock` tmpfiles entry are removed while `/var/lib/serverdeck` and
+`/etc/serverdeck` are preserved.
 
 ## Security notes
 

@@ -31,9 +31,11 @@ class UpdateController extends Controller
 
         $health->forget();
 
+        $manager = $report['manager'] ?? 'packages';
+        $label = $report['manager_label'] ?? 'package';
         $audit->log(
-            'apt.refresh',
-            "{$request->user()->name} refreshed APT package lists on the host",
+            "{$manager}.refresh",
+            "{$request->user()->name} refreshed {$label} package lists on the host",
             null,
             ['lists_updated_at' => $report['lists_updated_at'] ?? null],
         );
@@ -53,6 +55,8 @@ class UpdateController extends Controller
         @set_time_limit(0);
 
         $before = $updates->overview();
+        $manager = $before['manager'] ?? 'packages';
+        $label = $before['manager_label'] ?? 'package';
         $packages = collect($before['packages'] ?? [])->pluck('name')->take(100)->values()->all();
 
         try {
@@ -64,12 +68,13 @@ class UpdateController extends Controller
         $health->forget();
 
         $audit->log(
-            'apt.upgrade',
+            "{$manager}.upgrade",
             sprintf(
-                '%s installed %d package update%s on the host',
+                '%s installed %d package update%s on the host with %s',
                 $request->user()->name,
                 count($packages),
                 count($packages) === 1 ? '' : 's',
+                $label,
             ),
             null,
             [

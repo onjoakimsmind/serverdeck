@@ -297,6 +297,10 @@ trait InteractsWithHost
         return [
             'available' => true,
             'error' => null,
+            'manager' => 'apt',
+            'manager_label' => 'APT',
+            'security_supported' => true,
+            'security_note' => null,
             'packages' => [
                 [
                     'name' => 'xxd',

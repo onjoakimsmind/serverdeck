@@ -154,13 +154,16 @@ class HostHealthService
         $updateStatus = ! ($updates['available'] ?? false)
             ? 'info'
             : ($rebootRequired ? 'warning' : (($updateCounts['security'] ?? 0) > 0 ? 'warning' : (($updateCounts['total'] ?? 0) > 0 ? 'info' : 'ok')));
+        $securityDetail = ($updates['security_supported'] ?? true)
+            ? sprintf('%d security', $updateCounts['security'] ?? 0)
+            : 'security data unavailable';
         $updateDetail = ! ($updates['available'] ?? false)
             ? 'Updates are unavailable: '.($updates['error'] ?? 'unknown error')
             : sprintf(
-                '%d update%s · %d security%s',
+                '%d update%s · %s%s',
                 $updateCounts['total'] ?? 0,
                 ($updateCounts['total'] ?? 0) === 1 ? '' : 's',
-                $updateCounts['security'] ?? 0,
+                $securityDetail,
                 $rebootRequired ? ' · reboot required' : '',
             );
 

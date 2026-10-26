@@ -36,14 +36,57 @@ const counts = computed(() => props.updates.counts ?? { total: 0, planned: 0, se
 const rebootRequired = computed(() => Boolean(props.updates.reboot_required));
 const canUpgrade = computed(() => canOperate.value && props.updates.available && counts.value.planned > 0);
 
+const manager = computed(() => props.updates.manager ?? 'apt');
+const managerLabel = computed(() => props.updates.manager_label ?? 'Package manager');
+const securitySupported = computed(() => props.updates.security_supported !== false);
+const upgradeCommand = computed(() => {
+    if (manager.value === 'dnf') return 'dnf -y upgrade';
+    if (manager.value === 'pacman') return 'pacman -Syu --noconfirm';
+
+    return 'apt-get -y --with-new-pkgs upgrade';
+});
+const upgradeFootnote = computed(() => {
+    if (manager.value === 'dnf') {
+        return 'Upgrades run dnf -y upgrade. New dependency packages may be installed; the host is never rebooted automatically.';
+    }
+    if (manager.value === 'pacman') {
+        return 'Upgrades run pacman -Syu --noconfirm. Arch treats this as a full system upgrade, so conflicting packages may be replaced or removed; the host is never rebooted automatically.';
+    }
+
+    return 'Upgrades run apt-get -y --with-new-pkgs upgrade with non-interactive, keep-existing config handling. New dependency packages may be installed; no packages are removed and the host is never rebooted automatically.';
+});
+const planDetail = computed(() => {
+    if (manager.value === 'dnf') return 'Packages DNF will upgrade. New dependency packages may be installed.';
+    if (manager.value === 'pacman') return 'Packages Pacman will upgrade as part of a full system upgrade.';
+    if (manager.value === 'apt') return 'Packages APT will install. No packages are removed.';
+
+    return 'Packages the host package manager will upgrade.';
+});
+
 const confirmOpen = ref(false);
 const upgrading = ref(false);
 const refreshing = ref(false);
 
+const emptyDescription = computed(() => {
+    if (!props.updates.available) {
+        return 'The upgrade plan is unavailable until package status can be read.';
+    }
+
+    return `${managerLabel.value} has no pending upgrades from the current package lists. Refresh the lists to check for new releases.`;
+});
+
 const confirmDescription = computed(() => {
     const count = counts.value.planned ?? 0;
+    const noun = `package update${count === 1 ? '' : 's'}`;
 
-    return `${count} package update${count === 1 ? '' : 's'} will be installed. APT may install new dependency packages, but no packages are removed. Running services can restart while the upgrade is applied.`;
+    if (manager.value === 'dnf') {
+        return `${count} ${noun} will be installed. DNF may install new dependency packages. Running services can restart while the upgrade is applied.`;
+    }
+    if (manager.value === 'pacman') {
+        return `${count} ${noun} will be installed as part of a full system upgrade. Pacman may replace or remove conflicting packages. Running services can restart while the upgrade is applied.`;
+    }
+
+    return `${count} ${noun} will be installed. APT may install new dependency packages, but no packages are removed. Running services can restart while the upgrade is applied.`;
 });
 
 function refreshLists() {
@@ -85,16 +128,16 @@ function packageRepository(entry) {
     <div class="space-y-5">
         <PageHeader
             title="Updates & reboot"
-            subtitle="Pending APT updates, security patches, package list freshness and reboot requirements for this host."
+            :subtitle="`Pending ${managerLabel} updates, package list freshness and reboot requirements for this host.`"
         >
             <template #eyebrow>
                 <span class="inline-flex flex-wrap items-center gap-2 rounded-full border border-line bg-panel/60 px-2.5 py-1 text-[11px] text-muted">
-                    <StatusDot :status="!updates.available ? 'offline' : (rebootRequired ? 'degraded' : (counts.security ? 'degraded' : 'online'))" pulse />
-                    APT
+                    <StatusDot :status="!updates.available ? 'offline' : (rebootRequired ? 'degraded' : (securitySupported && counts.security ? 'degraded' : 'online'))" pulse />
+                    {{ managerLabel }}
                     <span class="text-dim">·</span>
                     {{ counts.total ?? 0 }} updates
                     <span class="text-dim">·</span>
-                    {{ counts.security ?? 0 }} security
+                    {{ securitySupported ? `${counts.security ?? 0} security` : 'security data unavailable' }}
                     <span class="text-dim">·</span>
                     {{ rebootRequired ? 'reboot required' : 'no reboot required' }}
                 </span>
@@ -145,21 +188,27 @@ function packageRepository(entry) {
         </div>
 
         <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard label="Available updates" :value="counts.total ?? 0" :subtitle="`${counts.planned ?? 0} ready to install${counts.held_back ? ` · ${counts.held_back} held back` : ''}`" :icon="PackageOpen" :tone="counts.total ? 'cyan' : 'accent'" detail="From the current APT package lists" />
-            <StatCard label="Security updates" :value="counts.security ?? 0" :subtitle="counts.security ? 'Patch these first' : 'No security patches pending'" :icon="ShieldAlert" :tone="counts.security ? 'rose' : 'accent'" detail="Packages published in a security repository" />
+            <StatCard label="Available updates" :value="counts.total ?? 0" :subtitle="`${counts.planned ?? 0} ready to install${counts.held_back ? ` · ${counts.held_back} held back` : ''}`" :icon="PackageOpen" :tone="counts.total ? 'cyan' : 'accent'" :detail="`From the current ${managerLabel} package lists`" />
+            <StatCard v-if="securitySupported" label="Security updates" :value="counts.security ?? 0" :subtitle="counts.security ? 'Patch these first' : 'No security patches pending'" :icon="ShieldAlert" :tone="counts.security ? 'rose' : 'accent'" detail="Packages published in a security repository" />
+            <StatCard v-else label="Security updates" value="—" :subtitle="updates.security_note ?? 'Security advisory data is unavailable'" :icon="ShieldAlert" tone="accent" detail="Advisory data unavailable for this package manager" />
             <StatCard label="Reboot required" :value="rebootRequired ? 'Yes' : 'No'" :subtitle="rebootRequired ? `${updates.reboot_packages?.length ?? 0} package${updates.reboot_packages?.length === 1 ? '' : 's'} waiting` : 'Running kernel matches the latest installed'" :icon="Power" :tone="rebootRequired ? 'amber' : 'accent'" detail="Host reboot is manual and audited" />
-            <StatCard label="Package lists" :value="updates.lists_updated_at ? timeAgo(epoch(updates.lists_updated_at)) : 'Unknown'" :subtitle="updates.last_upgrade_at ? `Last upgrade ${timeAgo(epoch(updates.last_upgrade_at))}` : 'No upgrade history found'" :icon="Clock" tone="cyan" :detail="updates.simulated_at ? `Simulated ${timeAgo(epoch(updates.simulated_at))}` : 'APT status unavailable'" />
+            <StatCard label="Package lists" :value="updates.lists_updated_at ? timeAgo(epoch(updates.lists_updated_at)) : 'Unknown'" :subtitle="updates.last_upgrade_at ? `Last upgrade ${timeAgo(epoch(updates.last_upgrade_at))}` : 'No upgrade history found'" :icon="Clock" tone="cyan" :detail="updates.simulated_at ? `Simulated ${timeAgo(epoch(updates.simulated_at))}` : 'Package status unavailable'" />
         </div>
 
         <div v-if="heldBack.length" class="rounded-xl border border-amber/25 bg-amber/10 px-4 py-3 text-[11px] leading-5 text-amber">
-            {{ heldBack.length }} update{{ heldBack.length === 1 ? '' : 's' }} are held back by APT and will not be installed by the standard upgrade because they require package removals. Review them in a root shell before a full upgrade.
+            <template v-if="manager === 'pacman'">
+                {{ heldBack.length }} package{{ heldBack.length === 1 ? ' is' : 's are' }} ignored by the Pacman configuration and will not be upgraded. Review <span class="font-mono">IgnorePkg</span> in <span class="font-mono">pacman.conf</span> before a full upgrade.
+            </template>
+            <template v-else>
+                {{ heldBack.length }} update{{ heldBack.length === 1 ? '' : 's' }} are held back by {{ managerLabel }} and will not be installed by the standard upgrade because they require package removals. Review them in a root shell before a full upgrade.
+            </template>
         </div>
 
         <section class="panel overflow-hidden">
             <div class="panel-header">
                 <div>
                     <h2 class="text-sm font-semibold text-bright">Upgrade plan</h2>
-                    <p class="mt-0.5 text-[11px] text-dim">Packages APT will install with <span class="font-mono text-muted">--with-new-pkgs upgrade</span>. No packages are removed.</p>
+                    <p class="mt-0.5 text-[11px] text-dim">{{ planDetail }} Runs <span class="font-mono text-muted">{{ upgradeCommand }}</span>.</p>
                 </div>
                 <span class="badge border-line bg-panel-2 text-dim">{{ packages.length }} planned</span>
             </div>
@@ -198,7 +247,7 @@ function packageRepository(entry) {
             </div>
 
             <div v-else class="p-5">
-                <EmptyState :icon="PackageCheck" title="Everything is up to date" :description="updates.available ? 'APT has no pending upgrades from the current package lists. Refresh the lists to check for new releases.' : 'The upgrade plan is unavailable until APT status can be read.'">
+                <EmptyState :icon="PackageCheck" title="Everything is up to date" :description="emptyDescription">
                     <button v-if="canOperate" type="button" class="btn btn-sm" :disabled="refreshing" @click="refreshLists">
                         <RefreshCw class="h-3 w-3" :class="{ 'animate-spin': refreshing }" /> Refresh package lists
                     </button>
@@ -279,7 +328,7 @@ function packageRepository(entry) {
                 </div>
             </div>
             <div class="border-t border-line/60 bg-panel-2/20 px-5 py-3 text-[11px] leading-5 text-dim">
-                Upgrades run <span class="font-mono text-muted">apt-get -y --with-new-pkgs upgrade</span> with non-interactive, keep-existing config handling. New dependency packages may be installed; no packages are removed and the host is never rebooted automatically.
+                {{ upgradeFootnote }}
             </div>
         </section>
 
