@@ -63,7 +63,12 @@ are not part of this release.
 
 ## Install
 
-Download the release tarball and its checksum, then install as root:
+Download the latest tarball and checksum from the repository's
+[Releases](https://github.com/onjoakimsmind/serverdeck/releases) page. Release
+tags are built and published by GitHub Actions; the package is not stored in
+the Git repository.
+
+Then install as root:
 
 ```sh
 sha256sum -c serverdeck-0.1.0-linux-x86_64.tar.gz.sha256
@@ -176,7 +181,12 @@ sh packaging/scripts/build-helper.sh packaging/.build/helper
 
 ## Packaging
 
-On a build host with Docker, Composer, and Node:
+Releases are built by the [CI workflow](.github/workflows/release.yml). Every
+push to `main`, every pull request, and every `v*` tag runs the tests, Pint,
+and the packaging build. The tarball and checksum are uploaded as a workflow
+artifact. A tag matching `packaging/VERSION` publishes them to GitHub Releases.
+
+To build the same archive locally on a host with Docker, Composer, and Node:
 
 ```sh
 sh packaging/scripts/build-release.sh --rebuild-assets
@@ -184,7 +194,19 @@ sh packaging/scripts/build-release.sh --rebuild-assets
 
 The helper is built in a Debian 11 image for glibc 2.31 compatibility.
 FrankenPHP and static PHP versions and checksums are pinned in
-`packaging/scripts/build-release.sh`.
+`packaging/scripts/build-release.sh`. Build outputs under `packaging/dist` and
+`packaging/.build` are ignored by Git.
+
+To publish a release, update `packaging/VERSION`, commit the change, and push a
+matching annotated tag:
+
+```sh
+version=$(cat packaging/VERSION)
+git tag -a "v${version}" -m "ServerDeck ${version}"
+git push origin main "v${version}"
+```
+
+The workflow rejects a tag whose version differs from `packaging/VERSION`.
 
 ## Security
 

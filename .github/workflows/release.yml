@@ -1,0 +1,223 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  COMPOSER_ALLOW_SUPERUSER: '1'
+
+jobs:
+  tests:
+    name: Tests and formatting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: mbstring, pdo_sqlite, sqlite3, xml, curl, zip
+          coverage: none
+          tools: composer:v2
+
+      - name: Cache Composer downloads
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/composer
+            ~/.composer/cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend assets
+        run: npm run build
+
+      - name: Prepare application environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Run test suite
+        run: php artisan test
+
+      - name: Check code formatting
+        run: vendor/bin/pint --test --format agent
+
+  package:
+    name: Build release package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: tests
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(cat packaging/VERSION)
+
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag_version=${GITHUB_REF_NAME#v}
+            if [[ "$tag_version" != "$version" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match packaging/VERSION ($version)." >&2
+              exit 1
+            fi
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building ServerDeck $version"
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: mbstring, pdo_sqlite, sqlite3, xml, curl, zip
+          coverage: none
+          tools: composer:v2
+
+      - name: Cache Composer downloads
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/composer
+            ~/.composer/cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Cache pinned web runtime
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/serverdeck-build
+          key: serverdeck-runtime-${{ runner.os }}-${{ hashFiles('packaging/scripts/build-release.sh') }}
+
+      - name: Verify Docker availability
+        run: docker info >/dev/null
+
+      - name: Build release archive
+        run: sh packaging/scripts/build-release.sh --rebuild-assets --version "${{ steps.version.outputs.version }}"
+
+      - name: Verify release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd packaging/dist
+
+          checksum_file=$(find . -maxdepth 1 -name 'serverdeck-*-linux-x86_64.tar.gz.sha256' -print -quit)
+          if [[ -z "$checksum_file" ]]; then
+            echo "Release checksum was not generated." >&2
+            exit 1
+          fi
+
+          archive=${checksum_file%.sha256}
+          sha256sum -c "$checksum_file"
+          tar -tzf "$archive" >/dev/null
+
+          mkdir -p "$RUNNER_TEMP/release"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/release"
+
+          release_dir="$RUNNER_TEMP/release/$(basename "$archive" .tar.gz)"
+          test -x "$release_dir/install.sh"
+          test -x "$release_dir/helper/serverdeck-hostctl"
+          test -x "$release_dir/helper/pamcheck"
+          test -x "$release_dir/payload/bin/frankenphp"
+          test -x "$release_dir/payload/bin/php"
+          "$release_dir/install.sh" --help >/dev/null
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: serverdeck-release
+          path: |
+            packaging/dist/serverdeck-*-linux-x86_64.tar.gz
+            packaging/dist/serverdeck-*-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: serverdeck-release
+          path: release
+
+      - name: Publish release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t assets < <(find release -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -print | sort)
+          if [[ "${#assets[@]}" -ne 2 ]]; then
+            echo "Expected the release tarball and checksum, found ${#assets[@]} file(s)." >&2
+            exit 1
+          fi
+
+          for checksum in "${assets[@]}"; do
+            if [[ "$checksum" == *.sha256 ]]; then
+              (cd "$(dirname "$checksum")" && sha256sum -c "$(basename "$checksum")")
+            fi
+          done
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "ServerDeck ${TAG#v}" \
+              --generate-notes \
+              --verify-tag
+          fi

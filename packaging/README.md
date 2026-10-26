@@ -35,6 +35,10 @@ workloads and are otherwise detected at runtime when already installed.
 
 ## Install
 
+Download the tarball and checksum from the repository's
+[Releases](https://github.com/onjoakimsmind/serverdeck/releases) page. Release
+tags are built by GitHub Actions; build artifacts are not committed to Git.
+
 Extract the release and run its installer as root:
 
 ```sh
@@ -210,9 +214,35 @@ configuration, data, and the service account. In both cases:
   root.
 - No application password hashes are stored.
 
+## Release builds
+
+GitHub Actions builds the release in `.github/workflows/release.yml`:
+
+- `tests` runs the PHP test suite and Pint with PHP 8.5 and Node 22.
+- `package` builds the bundled helper in Docker, runs
+  `packaging/scripts/build-release.sh --rebuild-assets`, verifies the archive
+  and checksum, and uploads both as the `serverdeck-release` workflow artifact.
+- `release` runs for `v*` tags and publishes the same tarball and checksum to
+  GitHub Releases.
+
+Build outputs are not committed. `packaging/dist`, `packaging/.build`, and
+`packaging/helper/__pycache__` are ignored by Git.
+
+Publish a release by updating `packaging/VERSION`, committing the change, and
+pushing a matching annotated tag:
+
+```sh
+version=$(cat packaging/VERSION)
+git tag -a "v${version}" -m "ServerDeck ${version}"
+git push origin main "v${version}"
+```
+
+The workflow rejects a tag whose version differs from `packaging/VERSION`.
+
 ## Rebuilding from source
 
-On a build host with Docker, Composer and Node:
+The CI workflow uses the same build script. On a build host with Docker,
+Composer and Node:
 
 ```sh
 sh packaging/scripts/build-release.sh --rebuild-assets
@@ -220,7 +250,8 @@ sh packaging/scripts/build-release.sh --rebuild-assets
 
 The helper is built in a Debian 11 image for glibc 2.31 compatibility.
 FrankenPHP and the static PHP CLI versions and SHA-256 checksums are pinned in
-`packaging/scripts/build-release.sh`.
+`packaging/scripts/build-release.sh`. Add `--skip-helper` to reuse a helper
+already present in `packaging/.build/helper`.
 
 ## Third-party components
 
