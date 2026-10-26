@@ -1,6 +1,7 @@
 # Design: ServerDeck Hub (multi-host overview)
 
-Status: **host-side reporting implemented (§4.1, §5.2); Hub app itself (§4.2) not yet built**
+Status: **v1 complete** — host-side reporting (§4.1, §5.2) and the Hub
+application itself (§4.2) are both implemented.
 Audience: ServerDeck maintainers, future contributors
 Related: README "Supported hosts" (multi-node fleet management is explicitly out of
 scope for the core product); `tests/Feature/DashboardTest.php::test_legacy_fleet_routes_redirect_to_the_real_host_sections`
@@ -27,9 +28,24 @@ Implemented so far, in `onjoakimsmind/serverdeck`:
   `tests/Feature/SettingsTest.php`, and
   `tests/Unit/Services/Host/NetworkConnectors/`.
 
-Not yet built: the Hub application itself (§4.2) — enrollment API, ingest
-endpoint, and the read-only multi-host dashboard. A host configured to
-report today has nothing listening on the other end.
+And in the new, separate [`onjoakimsmind/serverdeck-hub`](https://github.com/onjoakimsmind/serverdeck-hub)
+repository (§4.2):
+
+- Hub accounts (local email/password, `php artisan hub:create-admin`, no
+  public registration), enrollment (random token, SHA-256 hash stored, raw
+  token shown exactly once), `POST /api/ingest` (bearer-token authenticated,
+  validates the fixed payload shape, stores the latest snapshot plus a 24h
+  rolling sample history), and a read-only dashboard listing enrolled hosts
+  with their latest status — including the Tailscale/Twingate badges from
+  §5.2 when a host reports them.
+- Same stack as ServerDeck itself (Laravel + Inertia + Vue + Tailwind),
+  reusing its design tokens for a consistent look.
+- 26 tests covering auth, enrollment, ingest validation/auth/pruning, and
+  online-status logic. A Dockerfile, verified with a real build/run/login/
+  ingest smoke test.
+- Still a one-way, read-only overview exactly as scoped: there remains no
+  path anywhere in either repository for the Hub to read back into or act
+  on a host.
 
 ## 1. Problem
 
@@ -129,10 +145,10 @@ API below.
   Dashboard. It is strictly best-effort and fire-and-forget from the host's
   perspective.
 
-### 4.2 Hub side (new application, new repository) — not yet built
+### 4.2 Hub side (new application, new repository) — implemented
 
-Proposed name: `onjoakimsmind/serverdeck-hub`, kept open source for v1
-(matches "self-hosted, source open for now").
+[`onjoakimsmind/serverdeck-hub`](https://github.com/onjoakimsmind/serverdeck-hub),
+kept open source for v1 (matches "self-hosted, source open for now").
 
 Suggested stack: same as ServerDeck itself (Laravel + Inertia/Vue + SQLite by
 default), to keep it maintainable by the same people with the same tools,
@@ -296,11 +312,11 @@ Hub, or clear `HUB_URL`/`HUB_TOKEN` on the host).
 
 ## 8. Phased plan
 
-1. **v1 — this doc's scope.** Opt-in one-way reporting + read-only Hub
+1. **v1 — complete.** Opt-in one-way reporting + read-only Hub
    dashboard, self-hosted, open source. Includes §5.1 (bring-your-own
    Tailscale/Twingate network for the Hub's own deployment) since that's a
-   deployment choice, not new code. **Host side implemented** (§4.1); the
-   Hub application itself (§4.2) is the remaining piece of v1.
+   deployment choice, not new code. Both the host side (§4.1) and the Hub
+   application (§4.2) are implemented.
 2. **v1.1 — implemented ahead of schedule.** §5.2/§5.3 connector detection
    — host-side Tailscale/Twingate presence included in the ingest payload.
    Shipped alongside the host-side reporting since it reused the same

@@ -256,3 +256,4 @@ their respective licenses; see
 - Website and installer: <https://serverdeck.black.ax>
 - Releases: <https://github.com/onjoakimsmind/serverdeck/releases>
 - Issues: <https://github.com/onjoakimsmind/serverdeck/issues>
+- Hub (opt-in, read-only multi-host overview): <https://github.com/onjoakimsmind/serverdeck-hub>
