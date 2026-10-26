@@ -1,0 +1,12 @@
+[Unit]
+Description=Run ServerDeck scheduled tasks every minute
+
+[Timer]
+OnCalendar=*:0/1
+AccuracySec=30s
+RandomizedDelaySec=3s
+Persistent=true
+Unit=serverdeck-scheduler.service
+
+[Install]
+WantedBy=timers.target

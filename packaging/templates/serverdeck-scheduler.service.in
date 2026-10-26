@@ -1,0 +1,33 @@
+[Unit]
+Description=ServerDeck scheduled tasks
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=@PREFIX@/current/artisan
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+WorkingDirectory=@PREFIX@/current
+Environment=XDG_CONFIG_HOME=@DATA_DIR@/.config
+Environment=XDG_DATA_HOME=@DATA_DIR@/.local/share
+Environment=XDG_CACHE_HOME=@DATA_DIR@/.cache
+ExecStart=@PREFIX@/current/bin/php @PREFIX@/current/artisan schedule:run --no-interaction
+TimeoutStartSec=20min
+UMask=0027
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+RestrictRealtime=true
+LockPersonality=true
+ReadWritePaths=@DATA_DIR@
+SyslogIdentifier=serverdeck-scheduler
+StandardOutput=journal
+StandardError=journal

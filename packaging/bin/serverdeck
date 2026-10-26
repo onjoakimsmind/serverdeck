@@ -1,0 +1,486 @@
+#!/bin/sh
+#
+# ServerDeck command line wrapper for packaged installs.
+set -eu
+
+CONF_FILE="${SERVERDECK_CONF_FILE:-/etc/serverdeck/serverdeck.conf}"
+
+if [ ! -r "$CONF_FILE" ]; then
+	echo "serverdeck: $CONF_FILE is missing; is ServerDeck installed?" >&2
+	exit 1
+fi
+
+# shellcheck disable=SC1090
+. "$CONF_FILE"
+
+PREFIX="${SERVERDECK_PREFIX:-/opt/serverdeck}"
+DATA_DIR="${SERVERDECK_DATA_DIR:-/var/lib/serverdeck}"
+CONF_DIR="${SERVERDECK_CONF_DIR:-/etc/serverdeck}"
+PORT="${SERVERDECK_PORT:-8090}"
+BIND="${SERVERDECK_BIND:-0.0.0.0}"
+SERVICE_USER="${SERVERDECK_SERVICE_USER:-serverdeck}"
+ENV_FILE="$CONF_DIR/serverdeck.env"
+CURRENT="$PREFIX/current"
+
+if [ -t 1 ]; then
+	GREEN=$(printf '\033[32m')
+	YELLOW=$(printf '\033[33m')
+	RED=$(printf '\033[31m')
+	DIM=$(printf '\033[2m')
+	RESET=$(printf '\033[0m')
+else
+	GREEN=""
+	YELLOW=""
+	RED=""
+	DIM=""
+	RESET=""
+fi
+
+usage() {
+	cat <<'EOF'
+Usage: serverdeck <command>
+
+Commands:
+  status           Show service, scheduler, version and URL information
+  start            Start the web service
+  stop             Stop the web service and scheduler
+  restart          Restart the web service and scheduler
+  logs [-f] [-n N] Show journal logs (default: last 100 lines)
+  doctor           Check this installation and report broken prerequisites
+  artisan ...      Run an Artisan command as the service account
+  version          Print the installed release version
+  update           Explain how to install a newer release
+  uninstall        Explain how to remove ServerDeck
+  help             Show this help
+
+Configuration: /etc/serverdeck/serverdeck.conf
+EOF
+}
+
+require_root() {
+	if [ "$(id -u)" -ne 0 ]; then
+		echo "serverdeck: this command must run as root (use sudo)." >&2
+		exit 1
+	fi
+}
+
+current_release() {
+	if [ -L "$CURRENT" ] || [ -d "$CURRENT" ]; then
+		readlink -f "$CURRENT"
+	else
+		printf ''
+	fi
+}
+
+release_version() {
+	release=$(current_release)
+	if [ -n "$release" ] && [ -r "$release/VERSION" ]; then
+		head -n 1 "$release/VERSION"
+	elif [ -n "${SERVERDECK_VERSION:-}" ]; then
+		printf '%s\n' "$SERVERDECK_VERSION"
+	else
+		printf 'unknown\n'
+	fi
+}
+
+release_build() {
+	release=$(current_release)
+	if [ -n "$release" ] && [ -r "$release/BUILD_ID" ]; then
+		head -n 1 "$release/BUILD_ID"
+	fi
+}
+
+app_url() {
+	if [ -r "$ENV_FILE" ]; then
+		url=$(sed -n 's/^APP_URL=//p' "$ENV_FILE" | head -n 1 | tr -d '"')
+		if [ -n "$url" ]; then
+			printf '%s\n' "$url"
+			return
+		fi
+	fi
+	printf 'http://%s:%s\n' "$BIND" "$PORT"
+}
+
+run_as_service() {
+	if ! command -v runuser >/dev/null 2>&1; then
+		echo "serverdeck: runuser is required by this command." >&2
+		return 1
+	fi
+
+	runuser -u "$SERVICE_USER" -- env \
+		HOME="$DATA_DIR" \
+		XDG_CONFIG_HOME="$DATA_DIR/.config" \
+		XDG_DATA_HOME="$DATA_DIR/.local/share" \
+		XDG_CACHE_HOME="$DATA_DIR/.cache" \
+		"$@"
+}
+
+http_status() {
+	url="$1"
+	"$CURRENT/bin/php" -r '
+		$url = $argv[1];
+		$context = stream_context_create(["http" => ["timeout" => 3, "ignore_errors" => true]]);
+		@file_get_contents($url, false, $context);
+		$line = $http_response_header[0] ?? "";
+		if (preg_match("#^HTTP/\\S+\\s+(\\d+)#", $line, $match)) { echo $match[1]; }
+	' "$url"
+}
+
+cmd_status() {
+	release=$(current_release)
+	printf 'ServerDeck %s' "$(release_version)"
+	build=$(release_build)
+	if [ -n "$build" ]; then
+		printf ' %s(%s)%s' "$DIM" "$build" "$RESET"
+	fi
+	printf '\n'
+
+	if command -v systemctl >/dev/null 2>&1; then
+		web=$(systemctl is-active serverdeck.service 2>/dev/null || true)
+		timer=$(systemctl is-active serverdeck-scheduler.timer 2>/dev/null || true)
+		printf 'Web service:  %s\n' "${web:-unknown}"
+		printf 'Scheduler:    %s\n' "${timer:-unknown}"
+	fi
+
+	printf 'URL:          %s\n' "$(app_url)"
+	printf 'Release:      %s\n' "${release:-not installed}"
+	printf 'Data:         %s\n' "$DATA_DIR"
+	printf 'Database:     %s\n' "$DATA_DIR/database/database.sqlite"
+}
+
+cmd_start() {
+	require_root
+	systemctl start serverdeck-scheduler.timer
+	systemctl start serverdeck.service
+}
+
+cmd_stop() {
+	require_root
+	systemctl stop serverdeck-scheduler.timer 2>/dev/null || true
+	systemctl stop serverdeck.service 2>/dev/null || true
+}
+
+cmd_restart() {
+	require_root
+	systemctl daemon-reload
+	systemctl restart serverdeck.service
+	systemctl start serverdeck-scheduler.timer
+}
+
+cmd_logs() {
+	lines=100
+	follow=0
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			-f|--follow)
+				follow=1
+				shift
+				;;
+			-n)
+				[ "$#" -ge 2 ] || {
+					echo "serverdeck: -n requires a line count" >&2
+					exit 2
+				}
+				lines=$2
+				shift 2
+				;;
+			*)
+				echo "serverdeck: unknown logs option: $1" >&2
+				exit 2
+				;;
+		esac
+	done
+
+	case "$lines" in
+		''|*[!0-9]*)
+			echo "serverdeck: line count must be a number" >&2
+			exit 2
+			;;
+	esac
+
+	if command -v journalctl >/dev/null 2>&1; then
+		if [ "$follow" -eq 1 ]; then
+			exec journalctl -f -u serverdeck.service -u serverdeck-scheduler.service
+		fi
+		exec journalctl --no-pager -n "$lines" -u serverdeck.service -u serverdeck-scheduler.service
+	fi
+
+	echo "serverdeck: journalctl is unavailable; read $DATA_DIR/storage/logs instead." >&2
+	exit 1
+}
+
+ok_check() {
+	printf '  %s✓%s %s\n' "$GREEN" "$RESET" "$1"
+}
+
+warn_check() {
+	printf '  %s!%s %s\n' "$YELLOW" "$RESET" "$1"
+	warnings=$((warnings + 1))
+}
+
+bad_check() {
+	printf '  %s✗%s %s\n' "$RED" "$RESET" "$1"
+	failures=$((failures + 1))
+}
+
+cmd_doctor() {
+	require_root
+	release=$(current_release)
+	failures=0
+	warnings=0
+
+	printf 'ServerDeck doctor\n'
+	printf '%s\n' "$DIM──────────────────$RESET"
+
+	if [ -n "$release" ] && [ -x "$release/bin/php" ]; then
+		ok_check "Release $(release_version) is present at $release"
+	else
+		bad_check "The current release is missing or incomplete ($CURRENT)"
+	fi
+
+	if command -v systemctl >/dev/null 2>&1; then
+		if systemctl is-active --quiet serverdeck.service; then
+			ok_check "Web service is active"
+		else
+			bad_check "Web service is not active (journalctl -u serverdeck.service)"
+		fi
+		if systemctl is-active --quiet serverdeck-scheduler.timer; then
+			ok_check "Scheduler timer is active"
+		else
+			bad_check "Scheduler timer is not active"
+		fi
+	else
+		bad_check "systemctl is unavailable; ServerDeck requires systemd"
+	fi
+
+	if [ -n "$release" ] && [ -x "$release/bin/php" ]; then
+		status=$(http_status "http://127.0.0.1:$PORT/login" || true)
+		if [ "$status" = "200" ]; then
+			ok_check "Login page responds on 127.0.0.1:$PORT"
+		else
+			bad_check "Login page did not return HTTP 200 on 127.0.0.1:$PORT (got ${status:-no response})"
+		fi
+	fi
+
+	db="$DATA_DIR/database/database.sqlite"
+	if [ -f "$db" ]; then
+		if run_as_service test -w "$db"; then
+			ok_check "SQLite database is writable by $SERVICE_USER"
+		else
+			bad_check "SQLite database is not writable by $SERVICE_USER"
+		fi
+	else
+		bad_check "SQLite database is missing at $db"
+	fi
+
+	if [ -x /usr/local/sbin/serverdeck-hostctl ]; then
+		helper_out=$(printf '%s' '{"op":"systemd.list"}' | runuser -u "$SERVICE_USER" -- sudo -n /usr/local/sbin/serverdeck-hostctl 2>&1 || true)
+		if printf '%s' "$helper_out" | grep -q '"ok": true'; then
+			ok_check "Privileged helper works through sudo as $SERVICE_USER"
+		else
+			bad_check "Privileged helper failed through sudo (${helper_out:-no output})"
+		fi
+	else
+		bad_check "Privileged helper /usr/local/sbin/serverdeck-hostctl is missing"
+	fi
+
+	if [ -f /etc/pam.d/serverdeck ]; then
+		ok_check "PAM service file /etc/pam.d/serverdeck is present"
+	else
+		bad_check "PAM service file /etc/pam.d/serverdeck is missing"
+	fi
+
+	if [ -x /usr/local/libexec/serverdeck/pamcheck ] || [ -x /usr/bin/pamtester ]; then
+		ok_check "PAM authentication utility is installed"
+	else
+		bad_check "PAM authentication utility is missing"
+	fi
+
+	if [ -f /etc/sudoers.d/serverdeck ] && visudo -cf /etc/sudoers.d/serverdeck >/dev/null 2>&1; then
+		ok_check "Sudo rule for the privileged helper is valid"
+	else
+		bad_check "Sudo rule /etc/sudoers.d/serverdeck is missing or invalid"
+	fi
+
+	if [ -r "$ENV_FILE" ]; then
+		key=$(sed -n 's/^APP_KEY=//p' "$ENV_FILE" | head -n 1)
+		if [ -n "$key" ]; then
+			ok_check "Application key is configured"
+		else
+			bad_check "APP_KEY is missing from $ENV_FILE"
+		fi
+	else
+		bad_check "Environment file $ENV_FILE is missing"
+	fi
+
+	if [ -n "$release" ] && [ -x "$release/bin/php" ]; then
+		if (cd "$release" && run_as_service "$release/bin/php" "$release/artisan" migrate:status --no-ansi >/tmp/serverdeck-migrate-status.$$ 2>&1); then
+			if grep -q 'Pending' "/tmp/serverdeck-migrate-status.$$"; then
+				bad_check "Database has pending migrations"
+			else
+				ok_check "Database migrations are up to date"
+			fi
+		else
+			bad_check "Unable to read database migration status"
+		fi
+		rm -f "/tmp/serverdeck-migrate-status.$$"
+	fi
+
+	if command -v getconf >/dev/null 2>&1 && getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+		ok_check "$(getconf GNU_LIBC_VERSION)"
+	else
+		warn_check "Could not confirm a glibc runtime; packaged Linux builds require glibc"
+	fi
+
+	if [ -r /etc/os-release ]; then
+		os_name=$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-${ID:-unknown}}")
+		ok_check "Distribution: $os_name"
+	fi
+
+	if [ -x /usr/bin/incus ]; then
+		ok_check "Incus CLI is available"
+	else
+		warn_check "Incus is not installed; containers and VMs will be unavailable"
+	fi
+
+	if [ -x /usr/bin/docker ]; then
+		ok_check "Docker CLI is available"
+	else
+		warn_check "Docker is not installed; Docker screens will be unavailable"
+	fi
+
+	if [ -x /usr/sbin/smartctl ]; then
+		ok_check "smartmontools is available"
+	else
+		warn_check "smartmontools is not installed; SMART disk health will be unavailable"
+	fi
+
+	if [ -x /usr/sbin/zpool ]; then
+		ok_check "ZFS utilities are available"
+	else
+		warn_check "ZFS utilities are not installed; ZFS storage screens will be unavailable"
+	fi
+
+	if command -v firewall-cmd >/dev/null 2>&1; then
+		if firewall-cmd --state >/dev/null 2>&1; then
+			if firewall-cmd --query-port="$PORT/tcp" >/dev/null 2>&1; then
+				ok_check "firewalld allows port $PORT/tcp"
+			else
+				warn_check "firewalld is active but $PORT/tcp is not open"
+			fi
+		fi
+	elif command -v ufw >/dev/null 2>&1; then
+		if ufw status 2>/dev/null | grep -q "Status: active"; then
+			if ufw status 2>/dev/null | grep -Eq "(^|[ ,])$PORT/tcp"; then
+				ok_check "ufw allows port $PORT/tcp"
+			else
+				warn_check "ufw is active but $PORT/tcp is not open"
+			fi
+		fi
+	fi
+
+	if command -v apt-get >/dev/null 2>&1; then
+		ok_check "APT update management is supported on this distribution"
+	elif command -v dnf >/dev/null 2>&1 || command -v pacman >/dev/null 2>&1; then
+		warn_check "The Updates page currently targets APT; use the distro package manager outside ServerDeck"
+	fi
+
+	printf '%s\n' "$DIM──────────────────$RESET"
+	if [ "$failures" -gt 0 ]; then
+		printf '%s%d check(s) failed%s, %d warning(s).\n' "$RED" "$failures" "$RESET" "$warnings"
+		return 1
+	fi
+
+	printf '%sAll critical checks passed%s, %d warning(s).\n' "$GREEN" "$RESET" "$warnings"
+	return 0
+}
+
+cmd_artisan() {
+	require_root
+	[ -x "$CURRENT/bin/php" ] || {
+		echo "serverdeck: current release is missing" >&2
+		exit 1
+	}
+	(cd "$CURRENT" && run_as_service "$CURRENT/bin/php" "$CURRENT/artisan" "$@")
+}
+
+cmd_version() {
+	printf '%s' "$(release_version)"
+	build=$(release_build)
+	if [ -n "$build" ]; then
+		printf ' (%s)' "$build"
+	fi
+	printf '\n'
+}
+
+cmd_update() {
+	cat <<EOF
+To update ServerDeck, download the new release tarball and run its installer
+as root. Existing configuration and data are preserved.
+
+  tar -xzf serverdeck-<version>-linux-x86_64.tar.gz
+  cd serverdeck-<version>-linux-x86_64
+  sudo ./install.sh
+
+The current release remains available for rollback under:
+  $PREFIX/releases/
+EOF
+}
+
+cmd_uninstall() {
+	cat <<EOF
+Run the installer from the release you downloaded with --uninstall:
+
+  sudo ./install.sh --uninstall
+
+Add --purge to also remove configuration, the SQLite database and the
+service account. Without --purge, $DATA_DIR and $CONF_DIR are preserved.
+EOF
+}
+
+command=${1:-help}
+if [ "$#" -gt 0 ]; then
+	shift
+fi
+
+case "$command" in
+	status)
+		cmd_status
+		;;
+	start)
+		cmd_start
+		;;
+	stop)
+		cmd_stop
+		;;
+	restart)
+		cmd_restart
+		;;
+	logs)
+		cmd_logs "$@"
+		;;
+	doctor)
+		cmd_doctor
+		;;
+	artisan)
+		cmd_artisan "$@"
+		;;
+	version|--version|-V)
+		cmd_version
+		;;
+	update)
+		cmd_update
+		;;
+	uninstall)
+		cmd_uninstall
+		;;
+	help|--help|-h)
+		usage
+		;;
+	*)
+		echo "serverdeck: unknown command: $command" >&2
+		echo >&2
+		usage >&2
+		exit 2
+		;;
+esac
