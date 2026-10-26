@@ -63,6 +63,13 @@ cleanup() {
 
 trap cleanup EXIT HUP INT TERM
 
+# [ -r /dev/tty ] can be true even when the process has no controlling
+# terminal (for example under `incus exec`, some CI runners, or detached
+# automation), so actually try to open it rather than trusting the stat bit.
+has_tty() {
+	(exec 3<"/dev/tty") 2>/dev/null
+}
+
 printf '\n%sServerDeck installer%s\n' "$BOLD" "$RESET"
 printf '%sA control deck for the Linux host you already have.%s\n\n' "$DIM" "$RESET"
 
@@ -89,7 +96,7 @@ if [ "$(id -u)" -ne 0 ]; then
 		fail "Root access is required. Install sudo or run this installer as root."
 	fi
 
-	if [ -r /dev/tty ]; then
+	if has_tty; then
 		sudo -v </dev/tty || fail "Root access is required to install ServerDeck."
 	else
 		sudo -n true 2>/dev/null || fail "Root access is required. Run with sudo or from a root shell."
@@ -163,7 +170,7 @@ fi
 info "Starting the ServerDeck installer"
 printf '%sThe installer may ask for your sudo password and host package manager confirmation.%s\n\n' "$DIM" "$RESET"
 
-if [ -r /dev/tty ]; then
+if has_tty; then
 	"$SUDO" sh "$INSTALLER" "$@" </dev/tty
 else
 	"$SUDO" sh "$INSTALLER" "$@"
