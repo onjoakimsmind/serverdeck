@@ -15,6 +15,17 @@ it runs on, privileged actions go through a root-owned allow-listed helper, and
 authentication uses the host's existing Linux/PAM accounts. ServerDeck does not
 store application passwords.
 
+## Screenshots
+
+<p>
+  <img src="docs/screenshots/login.png" alt="ServerDeck sign-in screen using a Linux/PAM account" width="49%" />
+  <img src="docs/screenshots/dashboard.png" alt="ServerDeck dashboard with live CPU, memory and disk telemetry" width="49%" />
+</p>
+<p>
+  <img src="docs/screenshots/docker.png" alt="ServerDeck Docker page listing running containers" width="49%" />
+  <img src="docs/screenshots/disk-health.png" alt="ServerDeck disk health page with SMART status per drive" width="49%" />
+</p>
+
 ## Features
 
 - Dashboard and historical metrics for CPU, memory, load, disks, and network
