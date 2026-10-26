@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue';
-import { Head, Link, useForm, usePage } from '@inertiajs/vue3';
+import { Head, Link, router, useForm, usePage } from '@inertiajs/vue3';
 import {
     CheckCircle2,
     Clock,
@@ -11,6 +11,7 @@ import {
     MonitorCog,
     Rocket,
     Save,
+    Share2,
     ShieldCheck,
     TerminalSquare,
     UserRound,
@@ -19,7 +20,7 @@ import AppLayout from '@/Layouts/AppLayout.vue';
 import PageHeader from '@/Components/PageHeader.vue';
 import StatusDot from '@/Components/StatusDot.vue';
 import UserAvatar from '@/Components/UserAvatar.vue';
-import { formatUptime } from '@/lib/format';
+import { formatUptime, timeAgo } from '@/lib/format';
 
 defineOptions({ layout: AppLayout });
 
@@ -33,6 +34,8 @@ const page = usePage();
 const permissions = computed(() => page.props.permissions ?? {});
 const saved = ref(false);
 const dokploySaved = ref(false);
+const hubSaved = ref(false);
+const hubReporting = ref(false);
 
 const form = useForm({
     name: props.user.name ?? '',
@@ -42,6 +45,12 @@ const form = useForm({
 const dokployForm = useForm({
     dokploy_url: props.integrations?.dokploy?.url ?? 'http://127.0.0.1:3000',
     dokploy_token: '',
+    clear_token: false,
+});
+
+const hubForm = useForm({
+    hub_url: props.integrations?.hub?.url ?? '',
+    hub_token: '',
     clear_token: false,
 });
 
@@ -85,6 +94,30 @@ function saveDokploy() {
             dokploySaved.value = true;
             dokployForm.reset('dokploy_token', 'clear_token');
             window.setTimeout(() => (dokploySaved.value = false), 3500);
+        },
+    });
+}
+
+function saveHub() {
+    hubSaved.value = false;
+
+    hubForm.put('/settings/hub', {
+        preserveScroll: true,
+        onSuccess: () => {
+            hubSaved.value = true;
+            hubForm.reset('hub_token', 'clear_token');
+            window.setTimeout(() => (hubSaved.value = false), 3500);
+        },
+    });
+}
+
+function reportHubNow() {
+    hubReporting.value = true;
+
+    router.post('/settings/hub/report', {}, {
+        preserveScroll: true,
+        onFinish: () => {
+            hubReporting.value = false;
         },
     });
 }
@@ -265,6 +298,93 @@ function saveDokploy() {
                                     </span>
                                     <button type="submit" class="btn btn-primary btn-sm" :disabled="dokployForm.processing">
                                         <span v-if="dokployForm.processing" class="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                                        <Save v-else class="h-3 w-3" />
+                                        Save integration
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+
+                <section class="panel overflow-hidden">
+                    <div class="panel-header">
+                        <div>
+                            <h2 class="text-sm font-semibold text-bright">Hub reporting</h2>
+                            <p class="mt-0.5 text-[11px] text-dim">Opt-in, one-way status snapshots to a ServerDeck Hub</p>
+                        </div>
+                        <Share2 class="h-4 w-4 text-cyan" />
+                    </div>
+
+                    <div class="space-y-4 p-5">
+                        <div class="flex items-start gap-3 rounded-xl border border-line bg-panel-2/40 p-4">
+                            <span class="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-cyan/20 bg-cyan/10 text-cyan">
+                                <Share2 class="h-4 w-4" />
+                            </span>
+                            <div class="min-w-0 flex-1">
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <span class="text-[11px] font-medium text-bright">ServerDeck Hub</span>
+                                    <span class="badge" :class="integrations.hub?.configured ? 'border-accent/25 bg-accent/10 text-accent' : 'border-line bg-panel-2 text-dim'">
+                                        <StatusDot :status="integrations.hub?.configured ? 'online' : 'maintenance'" />
+                                        {{ integrations.hub?.configured ? 'configured' : 'not configured' }}
+                                    </span>
+                                </div>
+                                <p class="mt-0.5 text-[11px] leading-5 text-dim">
+                                    Sends a small, fixed status snapshot (CPU/memory/disk, workload counts, health
+                                    summary) to a Hub every few minutes. One-way only — the Hub can never act on
+                                    this host.
+                                </p>
+                                <p v-if="integrations.hub?.configured" class="mt-1 text-[11px] text-dim">
+                                    Last report:
+                                    <span :class="integrations.hub?.last_status === 'ok' ? 'text-accent' : 'text-rose'">
+                                        {{ integrations.hub?.last_reported_at ? timeAgo(integrations.hub.last_reported_at) : 'never' }}
+                                        <template v-if="integrations.hub?.last_status && integrations.hub.last_status !== 'ok'">({{ integrations.hub.last_status }})</template>
+                                    </span>
+                                </p>
+                            </div>
+                            <button
+                                v-if="integrations.hub?.configured"
+                                type="button"
+                                class="btn btn-sm shrink-0"
+                                :disabled="hubReporting"
+                                @click="reportHubNow"
+                            >
+                                <span v-if="hubReporting" class="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                                Report now
+                            </button>
+                        </div>
+
+                        <form class="space-y-4" @submit.prevent="saveHub">
+                            <div class="grid gap-4 sm:grid-cols-2">
+                                <div>
+                                    <label for="hub-url" class="label">Hub URL</label>
+                                    <input id="hub-url" v-model="hubForm.hub_url" class="input font-mono" placeholder="https://hub.example.com" autocomplete="off" />
+                                    <p class="mt-1 text-[11px] text-dim">Can be a Tailscale/Twingate-only address — it never needs to be public.</p>
+                                    <p v-if="hubForm.errors.hub_url" class="mt-1 text-[11px] text-rose">{{ hubForm.errors.hub_url }}</p>
+                                </div>
+                                <div>
+                                    <label for="hub-token" class="label">Enrollment token</label>
+                                    <input id="hub-token" v-model="hubForm.hub_token" type="password" class="input font-mono" autocomplete="new-password" :placeholder="integrations.hub?.token_hint ?? 'Paste the token from the Hub'" />
+                                    <p class="mt-1 text-[11px] text-dim">
+                                        Leave blank to keep the current token<template v-if="integrations.hub?.token_hint"> ({{ integrations.hub.token_hint }})</template>.
+                                    </p>
+                                    <p v-if="hubForm.errors.hub_token" class="mt-1 text-[11px] text-rose">{{ hubForm.errors.hub_token }}</p>
+                                </div>
+                            </div>
+
+                            <label v-if="integrations.hub?.configured" class="flex cursor-pointer items-center gap-2 text-[11px] text-muted">
+                                <input v-model="hubForm.clear_token" type="checkbox" class="h-3.5 w-3.5 rounded border-line bg-panel-2" />
+                                Remove the stored Hub token (stops reporting)
+                            </label>
+
+                            <div class="flex flex-wrap items-center justify-between gap-3 border-t border-line/60 pt-4">
+                                <p class="text-[11px] text-dim">Leave the URL blank to disable reporting entirely.</p>
+                                <div class="flex items-center gap-2">
+                                    <span v-if="hubSaved" class="inline-flex items-center gap-1 text-[11px] text-accent">
+                                        <CheckCircle2 class="h-3 w-3" /> Saved
+                                    </span>
+                                    <button type="submit" class="btn btn-primary btn-sm" :disabled="hubForm.processing">
+                                        <span v-if="hubForm.processing" class="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
                                         <Save v-else class="h-3 w-3" />
                                         Save integration
                                     </button>

@@ -11,3 +11,6 @@ Artisan::command('inspire', function () {
 Schedule::command('backups:run')->everyMinute()->withoutOverlapping();
 Schedule::command('alerts:run')->everyMinute()->withoutOverlapping();
 Schedule::command('metrics:sample')->everyMinute()->withoutOverlapping();
+
+$hubIntervalMinutes = max(1, (int) config('serverdeck.hub.report_interval_minutes', 5));
+Schedule::command('hub:report')->cron("*/{$hubIntervalMinutes} * * * *")->withoutOverlapping();

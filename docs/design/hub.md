@@ -1,10 +1,35 @@
 # Design: ServerDeck Hub (multi-host overview)
 
-Status: **proposal, not implemented**
+Status: **host-side reporting implemented (§4.1, §5.2); Hub app itself (§4.2) not yet built**
 Audience: ServerDeck maintainers, future contributors
 Related: README "Supported hosts" (multi-node fleet management is explicitly out of
 scope for the core product); `tests/Feature/DashboardTest.php::test_legacy_fleet_routes_redirect_to_the_real_host_sections`
 (the project already walked back an earlier multi-server "fleet" concept once)
+
+Implemented so far, in `onjoakimsmind/serverdeck`:
+
+- `App\Services\HubReportingService` — config (via the existing `Setting`
+  model, same pattern as the Dokploy integration), payload building, and the
+  outbound POST, all exactly as described in §4.1 and §6.
+- `App\Services\Host\NetworkConnectors\{Tailscale,Twingate}Connector` — the
+  §5.2 detection, wired through a contextual binding in
+  `AppServiceProvider` so a third connector is a new class + one line there.
+- `hub:report` Artisan command, scheduled every
+  `config('serverdeck.hub.report_interval_minutes')` minutes (default 5) in
+  `routes/console.php`.
+- A **Settings UI** section (`Settings/Profile.vue` + `ProfileController`)
+  for configuring the Hub URL/token and triggering an immediate report —
+  this replaces this doc's original sketch of a `sudo serverdeck hub enroll`
+  CLI command, since the codebase already has an established pattern for
+  exactly this shape of integration (see the existing Dokploy settings
+  section) and a web UI is a better fit for this product's actual users.
+- Full test coverage: `tests/Feature/HubReportingTest.php`,
+  `tests/Feature/SettingsTest.php`, and
+  `tests/Unit/Services/Host/NetworkConnectors/`.
+
+Not yet built: the Hub application itself (§4.2) — enrollment API, ingest
+endpoint, and the read-only multi-host dashboard. A host configured to
+report today has nothing listening on the other end.
 
 ## 1. Problem
 
@@ -75,29 +100,36 @@ snapshot. The Hub is a new, independent application — it does not import or
 depend on a running ServerDeck instance's internals, it only speaks the ingest
 API below.
 
-### 4.1 Host side (existing `onjoakimsmind/serverdeck` app)
+### 4.1 Host side (existing `onjoakimsmind/serverdeck` app) — implemented
 
-- New config: `HUB_URL` and `HUB_TOKEN` in `serverdeck.env` (parallel to how
-  `packaging/templates/serverdeck.service.in` already injects environment).
-  Both empty/unset by default — reporting is simply not scheduled if so.
-- New scheduled job, registered the same way existing metric-sampling jobs
-  are (see `routes/console.php` / the scheduler service in
-  `packaging/templates/serverdeck-scheduler.service.in`). Runs every 5
-  minutes (configurable), reuses the same `Host\*` services that already
-  back the Dashboard "at a glance" cards — no new data collection code, just
-  a new consumer of data that already exists.
-- `sudo serverdeck hub enroll <hub-url> <token>` CLI command (mirrors
-  existing `sudo serverdeck <subcommand>` conventions in `packaging/bin/serverdeck`)
-  to set the two config values and restart the scheduler, instead of hand-editing
-  `serverdeck.env`.
-- `sudo serverdeck hub status` to show whether reporting is enabled and when
-  the last successful push was.
-- Failure handling: if the Hub is unreachable, the job logs and retries next
-  tick. It must never block, slow down, or otherwise affect the host's own
-  Dashboard — reporting is strictly best-effort and fire-and-forget from the
-  host's perspective.
+- Config lives in the `settings` table via the existing `Setting` model
+  (`hub.url`, `hub.token` — encrypted at rest — `hub.last_reported_at`,
+  `hub.last_status`), the same pattern already used for the Dokploy
+  integration, rather than `serverdeck.env`. Both unset by default —
+  reporting is a no-op until an admin configures a Hub in Settings.
+- Configuration happens through a **Settings UI** section
+  (`resources/js/Pages/Settings/Profile.vue` + `ProfileController`), mirroring
+  the existing Dokploy integration section exactly (URL field, token field,
+  "configured" badge, clear-token checkbox), plus a "Report now" button for
+  an immediate, on-demand send. This replaced the originally-sketched
+  `sudo serverdeck hub enroll`/`hub status` CLI commands once it became clear
+  the codebase already has an established, better-fitting pattern for this
+  exact shape of integration.
+- `App\Services\HubReportingService` builds the payload from the same
+  `HostMetricsService`/`HostHealthService` that already back the Dashboard
+  "at a glance" cards — no new data collection code, just a new consumer of
+  data that already exists — and POSTs it with the token as a bearer token.
+- `hub:report` Artisan command, scheduled every
+  `config('serverdeck.hub.report_interval_minutes')` minutes (default 5) via
+  `routes/console.php`, the same way `metrics:sample` and `alerts:run`
+  already are.
+- Failure handling: `report()` never throws; failures are logged and
+  recorded (`hub.last_status`) rather than surfaced as exceptions, so
+  reporting can never block, slow down, or otherwise affect the host's own
+  Dashboard. It is strictly best-effort and fire-and-forget from the host's
+  perspective.
 
-### 4.2 Hub side (new application, new repository)
+### 4.2 Hub side (new application, new repository) — not yet built
 
 Proposed name: `onjoakimsmind/serverdeck-hub`, kept open source for v1
 (matches "self-hosted, source open for now").
@@ -159,7 +191,7 @@ hostname Twingate resolves for the Hub resource). Nothing in ServerDeck or
 the Hub needs to know a connector is involved — it's a deployment choice,
 documented as the recommended default in the Hub's own README.
 
-### 5.2 Connector detection (small, optional host-side addition)
+### 5.2 Connector detection (small, optional host-side addition) — implemented
 
 To make enrollment easier and the Hub dashboard more useful, the host-side
 reporter can detect which overlay network(s) it's on and include that in the
@@ -267,10 +299,12 @@ Hub, or clear `HUB_URL`/`HUB_TOKEN` on the host).
 1. **v1 — this doc's scope.** Opt-in one-way reporting + read-only Hub
    dashboard, self-hosted, open source. Includes §5.1 (bring-your-own
    Tailscale/Twingate network for the Hub's own deployment) since that's a
-   deployment choice, not new code.
-2. **v1.1 (small addition).** §5.2/§5.3 connector detection — host-side
-   Tailscale/Twingate presence surfaced in the ingest payload and Hub UI.
-   Independent of the rest of v1 and can ship slightly after it.
+   deployment choice, not new code. **Host side implemented** (§4.1); the
+   Hub application itself (§4.2) is the remaining piece of v1.
+2. **v1.1 — implemented ahead of schedule.** §5.2/§5.3 connector detection
+   — host-side Tailscale/Twingate presence included in the ingest payload.
+   Shipped alongside the host-side reporting since it reused the same
+   payload-building code path.
 3. **v2 (possible).** Hub-side alerting/notifications (reuse the existing
    per-host alert-channel concept, but fan screenshot-style summaries out to
    e.g. Slack/email from the Hub instead of per-host) — still no write path

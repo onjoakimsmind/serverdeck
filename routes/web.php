@@ -146,6 +146,8 @@ Route::middleware('auth')->group(function () {
         Route::get('/users', [UserController::class, 'index'])->name('users.index');
         Route::put('/users/{user}', [UserController::class, 'update'])->name('users.update');
         Route::put('/settings/dokploy', [ProfileController::class, 'updateDokploy'])->name('settings.dokploy.update');
+        Route::put('/settings/hub', [ProfileController::class, 'updateHub'])->name('settings.hub.update');
+        Route::post('/settings/hub/report', [ProfileController::class, 'reportHubNow'])->name('settings.hub.report');
         Route::post('/alerts/channels', [AlertController::class, 'store'])->name('alerts.channels.store');
         Route::put('/alerts/channels/{channel}', [AlertController::class, 'update'])->name('alerts.channels.update');
         Route::delete('/alerts/channels/{channel}', [AlertController::class, 'destroy'])->name('alerts.channels.destroy');

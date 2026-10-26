@@ -3,6 +3,9 @@
 namespace App\Providers;
 
 use App\Models\User;
+use App\Services\Host\NetworkConnectors\TailscaleConnector;
+use App\Services\Host\NetworkConnectors\TwingateConnector;
+use App\Services\HubReportingService;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 
@@ -10,7 +13,12 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        //
+        $this->app->when(HubReportingService::class)
+            ->needs('$connectors')
+            ->give(fn () => [
+                $this->app->make(TailscaleConnector::class),
+                $this->app->make(TwingateConnector::class),
+            ]);
     }
 
     public function boot(): void
