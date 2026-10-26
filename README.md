@@ -82,7 +82,7 @@ The bootstrap installer resolves the latest stable GitHub release, downloads
 the Linux x86_64 archive and its published SHA-256 checksum, verifies the
 archive, and then runs the release installer with `sudo`. It's served from
 [serverdeck.black.ax](https://serverdeck.black.ax), the project's landing site
-(source in [`site/`](site)):
+(source in [`onjoakimsmind/serverdeck-site`](https://github.com/onjoakimsmind/serverdeck-site)):
 
 ```sh
 curl -fsSL https://serverdeck.black.ax/install.sh | sh

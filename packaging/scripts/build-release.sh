@@ -150,7 +150,6 @@ rsync -a \
 	--exclude='node_modules/' \
 	--exclude='packaging/' \
 	--exclude='public/hot' \
-	--exclude='site/' \
 	--exclude='storage/' \
 	--exclude='tests/' \
 	--exclude='vendor/' \
