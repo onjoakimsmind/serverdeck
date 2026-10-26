@@ -63,12 +63,25 @@ are not part of this release.
 
 ## Install
 
-Download the latest tarball and checksum from the repository's
-[Releases](https://github.com/onjoakimsmind/serverdeck/releases) page. Release
-tags are built and published by GitHub Actions; the package is not stored in
-the Git repository.
+The bootstrap installer resolves the latest stable GitHub release, downloads
+the Linux x86_64 archive and its published SHA-256 checksum, verifies the
+archive, and then runs the release installer with `sudo`:
 
-Then install as root:
+```sh
+curl -fsSL https://serverdeck.black.ax/install.sh | sh
+```
+
+Installer options pass through with `sh -s --`:
+
+```sh
+curl -fsSL https://serverdeck.black.ax/install.sh | sh -s -- --port 8443 --open-firewall
+curl -fsSL https://serverdeck.black.ax/install.sh | sh -s -- --workloads incus,docker
+```
+
+To install a specific release manually, download the tarball and checksum from
+the repository's [Releases](https://github.com/onjoakimsmind/serverdeck/releases)
+page. Release tags are built and published by GitHub Actions; the package is not
+stored in the Git repository.
 
 ```sh
 sha256sum -c serverdeck-0.1.0-linux-x86_64.tar.gz.sha256

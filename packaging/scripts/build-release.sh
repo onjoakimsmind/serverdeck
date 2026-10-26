@@ -139,6 +139,7 @@ rsync -a \
 	--exclude='.agents/' \
 	--exclude='.claude/' \
 	--exclude='.git/' \
+	--exclude='.github/' \
 	--exclude='.zed/' \
 	--exclude='.env' \
 	--exclude='.env.*' \
@@ -149,6 +150,7 @@ rsync -a \
 	--exclude='node_modules/' \
 	--exclude='packaging/' \
 	--exclude='public/hot' \
+	--exclude='site/' \
 	--exclude='storage/' \
 	--exclude='tests/' \
 	--exclude='vendor/' \
