@@ -180,7 +180,7 @@ if [ "$SKIP_HELPER" -eq 1 ] && [ -x "$PACKAGING_DIR/.build/helper/serverdeck-hos
 	cp "$PACKAGING_DIR/.build/helper/serverdeck-hostctl" "$RELEASE_DIR/helper/serverdeck-hostctl"
 	cp "$PACKAGING_DIR/.build/helper/pamcheck" "$RELEASE_DIR/helper/pamcheck"
 else
-	"$SCRIPT_DIR/build-helper.sh" "$WORK_DIR/helper"
+	sh "$SCRIPT_DIR/build-helper.sh" "$WORK_DIR/helper"
 	cp "$WORK_DIR/helper/serverdeck-hostctl" "$RELEASE_DIR/helper/serverdeck-hostctl"
 	cp "$WORK_DIR/helper/pamcheck" "$RELEASE_DIR/helper/pamcheck"
 fi
